@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(grep -Ei '\\(^|/\\)\\\\.env$|node_modules/|\\\\.next/')"
+    ]
+  }
+}

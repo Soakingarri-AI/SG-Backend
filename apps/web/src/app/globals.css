@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-indigoblack text-slate-100 antialiased;
+}
+
+.card-glow {
+  box-shadow: 0 0 0 1px rgba(224, 160, 52, 0.12),
+    0 20px 60px -20px rgba(224, 160, 52, 0.25);
+}
+
+.gradient-text {
+  @apply bg-gradient-to-r from-brand-300 via-brand-500 to-brand-700 bg-clip-text text-transparent;
+}

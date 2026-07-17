@@ -1,0 +1,96 @@
+# =============================================================================
+# SoakinGarri AI — Development Orchestration
+# Maps 1:1 to the AWS production topology:
+#   postgres  -> Amazon Aurora PostgreSQL (pgvector)
+#   redis     -> Amazon ElastiCache for Redis
+#   api       -> ECS Fargate service (behind ALB)
+#   web       -> ECS Fargate service / Amplify (behind CloudFront)
+# =============================================================================
+name: soakingarri
+
+services:
+  postgres:
+    # pgvector-enabled image mirrors the Aurora pgvector extension in prod.
+    image: pgvector/pgvector:pg16
+    container_name: sg_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-soakingarri}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soakingarri_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-soakingarri}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./apps/api/scripts/init_pgvector.sql:/docker-entrypoint-initdb.d/00_init_pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soakingarri} -d ${POSTGRES_DB:-soakingarri}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sg_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+      target: dev
+    container_name: sg_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-soakingarri}:${POSTGRES_PASSWORD:-soakingarri_dev}@postgres:5432/${POSTGRES_DB:-soakingarri}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+      - ./data:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      target: dev
+    container_name: sg_web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:

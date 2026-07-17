@@ -1,0 +1,17 @@
+{
+  "category": "beverages",
+  "typical_products": ["sachet water", "bottled water", "soft drinks", "fruit juice"],
+  "core_machines": [
+    { "name": "Water treatment / RO plant", "purpose": "Purify source water", "typical_cost_usd": 18000 },
+    { "name": "Automatic sachet filling machine", "purpose": "Fill and seal sachets", "typical_cost_usd": 9000 },
+    { "name": "Bottle blow molding machine", "purpose": "Form PET bottles", "typical_cost_usd": 25000 },
+    { "name": "Filling & capping line", "purpose": "Fill and cap bottles", "typical_cost_usd": 32000 },
+    { "name": "Labeling & shrink-wrap", "purpose": "Label and pack", "typical_cost_usd": 14000 }
+  ],
+  "process_flow": [
+    "Source intake", "Filtration / RO", "UV + ozone treatment", "Filling",
+    "Sealing / capping", "Labeling", "Packaging", "Quality control", "Warehousing"
+  ],
+  "utilities": ["3-phase power", "borehole / municipal water", "generator backup"],
+  "compliance": ["NAFDAC registration", "SON / NIS standards", "factory hygiene permit"]
+}

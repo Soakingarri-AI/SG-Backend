@@ -1,0 +1,14 @@
+{
+  "West Africa": {
+    "power_reliability": "intermittent; budget for diesel/solar backup",
+    "typical_labour_cost_usd_month": 180,
+    "key_regulators": ["NAFDAC", "SON", "state ministries of commerce"],
+    "logistics_notes": "Port clearance (Lagos/Tema) can add 4-8 weeks lead time on imported machinery."
+  },
+  "East Africa": {
+    "power_reliability": "improving grid; backup still recommended",
+    "typical_labour_cost_usd_month": 150,
+    "key_regulators": ["KEBS", "TBS", "UNBS"],
+    "logistics_notes": "Mombasa / Dar es Salaam corridors serve landlocked markets."
+  }
+}
