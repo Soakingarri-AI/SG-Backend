@@ -72,7 +72,28 @@ export const PRODUCTS: Product[] = [
   },
 ];
 
+/**
+ * True in the GitHub Pages static demo. There are no subdomains on a single
+ * static host, so products are reached by path instead (/ask, /examflow, …).
+ */
+export const IS_STATIC_DEMO = process.env.NEXT_PUBLIC_STATIC_DEMO === "true";
+
+/** Repo-name base path, only set in the Pages build (e.g. "/SG-Backend"). */
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+/**
+ * Prefix a public/ asset with the base path. next/image with `unoptimized`
+ * does not auto-apply basePath, so static/img srcs must be built with this.
+ */
+export function asset(path: string): string {
+  return `${IS_STATIC_DEMO ? BASE_PATH : ""}${path}`;
+}
+
 export function productUrl(subdomain: string): string {
+  // Static demo: internal path. next/link auto-prepends basePath (/SG-Backend).
+  if (IS_STATIC_DEMO) {
+    return `/${subdomain}`;
+  }
   if (process.env.NODE_ENV === "development") {
     return `http://${subdomain}.localhost:3000`;
   }

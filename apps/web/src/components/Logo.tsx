@@ -1,11 +1,12 @@
 import Image from "next/image";
 import Link from "next/link";
+import { asset } from "@/lib/config";
 
 export function Logo({ size = 40 }: { size?: number }) {
   return (
     <Link href="/" className="flex items-center gap-3">
       <Image
-        src="/logo.png"
+        src={asset("/logo.png")}
         alt="SoakinGarri AI"
         width={size}
         height={size}

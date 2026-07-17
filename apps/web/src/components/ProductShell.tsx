@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Logo } from "./Logo";
-import { ROOT_DOMAIN } from "@/lib/config";
+import { IS_STATIC_DEMO, ROOT_DOMAIN } from "@/lib/config";
 
 export function ProductShell({
   title,
@@ -17,7 +17,7 @@ export function ProductShell({
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <Logo size={34} />
           <Link
-            href={`https://${ROOT_DOMAIN}`}
+            href={IS_STATIC_DEMO ? "/" : `https://${ROOT_DOMAIN}`}
             className="text-sm text-slate-400 hover:text-brand-300"
           >
             ← All products

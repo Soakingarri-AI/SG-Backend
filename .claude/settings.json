@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(git init *)",
-      "Bash(grep -Ei '\\(^|/\\)\\\\.env$|node_modules/|\\\\.next/')"
+      "Bash(grep -Ei '\\(^|/\\)\\\\.env$|node_modules/|\\\\.next/')",
+      "Bash(GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' git push -u origin main)",
+      "Bash(command -v gh)",
+      "Bash(gh auth *)",
+      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)",
+      "Bash(NEXT_PUBLIC_STATIC_DEMO=true NEXT_PUBLIC_BASE_PATH=/SG-Backend NEXT_PUBLIC_ROOT_DOMAIN=soakingarri.com npm run build)",
+      "Bash(tail -25 /tmp/pagesbuild.log)",
+      "Read(//tmp/**)"
     ]
   }
 }
