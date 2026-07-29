@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
+    "email-validator>=2.1.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "sqlalchemy[asyncio]>=2.0.30",
@@ -15,6 +16,8 @@ dependencies = [
     "pgvector>=0.3.0",
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7.4",
+    # passlib 1.7.4 probes bcrypt.__about__, which bcrypt>=4.1 removed; pin to 4.0.x.
+    "bcrypt>=4.0,<4.1",
     "python-multipart>=0.0.9",
     "redis>=5.0",
     "boto3>=1.34",
@@ -32,6 +35,11 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 
+# Only ``app`` is the installable package; ``alembic``/``scripts``/``tests``
+# ride along in the image but are not importable top-level packages.
+[tool.setuptools.packages.find]
+include = ["app*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -47,3 +55,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# One session-wide event loop so the loop-bound asyncpg engine and Redis client
+# are shared across every test and fixture.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+pythonpath = ["."]
+testpaths = ["tests"]

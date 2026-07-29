@@ -9,7 +9,14 @@
       "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com)",
       "Bash(NEXT_PUBLIC_STATIC_DEMO=true NEXT_PUBLIC_BASE_PATH=/SG-Backend NEXT_PUBLIC_ROOT_DOMAIN=soakingarri.com npm run build)",
       "Bash(tail -25 /tmp/pagesbuild.log)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(python -c \"import app.main; print\\('IMPORT OK'\\)\")",
+      "Bash(docker version *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(docker compose *)",
+      "Bash(docker buildx *)",
+      "Bash(docker system *)",
+      "Bash(curl -s --unix-socket /var/run/docker.sock http://localhost/build)"
     ]
   }
 }

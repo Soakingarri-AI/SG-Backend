@@ -7,10 +7,10 @@ than a committed ``.env`` file.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, PostgresDsn, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, PostgresDsn, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -37,10 +37,13 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 30
     COOKIE_DOMAIN: str = ".soakingarri.com"
 
     # --- CORS ---
-    CORS_ORIGINS: list[str] = Field(default_factory=list)
+    # ``NoDecode`` stops pydantic-settings from JSON-decoding the env value so the
+    # validator below can accept a plain comma-separated string (e.g. from .env).
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # --- Rate limiting ---
     RATE_LIMIT_PER_MINUTE: int = 60
@@ -67,6 +70,17 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _forbid_default_secret_outside_dev(self) -> "Settings":
+        """Refuse to boot staging/production with the placeholder JWT secret —
+        a known signing key lets anyone forge tokens for any user."""
+        if self.ENVIRONMENT != "development" and self.JWT_SECRET_KEY == "change-me":
+            raise ValueError(
+                "JWT_SECRET_KEY must be set to a strong random value when "
+                f"ENVIRONMENT={self.ENVIRONMENT!r}"
+            )
+        return self
 
     @property
     def is_production(self) -> bool:
