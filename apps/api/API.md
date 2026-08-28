@@ -86,7 +86,8 @@ Pydantic/FastAPI.
 |--------|---------|
 | `400` | Bad request (e.g. invalid/expired reset token) |
 | `401` | Missing, invalid, expired, or revoked credentials |
-| `404` | Resource not found or not owned by the caller |
+| `403` | Resource exists but belongs to another user (Ask sessions) |
+| `404` | Resource not found (or not owned by the caller, in the older modules) |
 | `409` | Conflict (e.g. email already registered, session already submitted) |
 | `422` | Request body failed validation |
 | `429` | Rate limit exceeded — see `Retry-After` header |
@@ -182,24 +183,59 @@ existing sessions**. `400` if the token is invalid or expired.
 
 ### Ask SoakinGarri
 
-RAG teaching assistant over African-history sources with inline citations.
+Grounded AI tutor (African history and culture + general STEM) with chat
+sessions and three learning modes. Retrieval is **currently stubbed**: until
+the vector index is loaded, `sources` is always `[]` and answers draw on the
+model's general knowledge. When retrieval activates (`RAG_ENABLED=true`), the
+same contract carries real citations — clients should render the `sources`
+panel unconditionally.
+
+Session ownership is strict: another user's session id returns `403`; an
+unknown id returns `404`.
 
 #### `POST /ask` → `200` 🔒
+Submit a question; creates a new session or continues an existing one.
 ```json
 // request (AskRequest)
-{ "query": "Who was Queen Amina of Zazzau?",
-  "mode": "normal",                 // "beginner" | "normal" | "advanced"
+{ "prompt": "Who was Queen Amina of Zazzau?",   // 1–4000 chars
+  "learning_mode": "normal",        // "beginner" | "normal" | "advanced"
   "session_id": null }              // optional; continues an existing chat
 // response (AskResponse)
-{ "answer": "…grounded answer citing [Source 1]…",
-  "citations": [
-    { "document_title": "Queen Amina", "source_path": "…/queen_amina.md",
-      "snippet": "…", "score": 0.83 }
-  ],
-  "session_id": "uuid",
-  "mode": "normal" }
+{ "session_id": "uuid",
+  "message_id": "uuid",             // id of the persisted assistant message
+  "answer": "…grounded answer citing [Source 1]…",
+  "learning_mode": "normal",
+  "sources": [                      // [] while the index is loading
+    { "title": "Queen Amina", "source_url": null,
+      "snippet": "…", "category": "african_history" }
+  ] }
 ```
-`query` is 1–2000 chars. Messages are persisted to the shared chat store.
+Both turns are persisted to the shared chat store. Prompts are sanitized and
+token-budget-checked before any model call; a prompt that is empty after
+sanitization returns `422`.
+
+#### `GET /ask/sessions` → `200` 🔒
+The caller's Ask sessions, most recently active first.
+```json
+[ { "id": "uuid", "title": "Who was Queen Amina of Zazzau?",
+    "created_at": "2026-08-28T10:00:00Z", "updated_at": "2026-08-28T10:05:00Z" } ]
+```
+
+#### `GET /ask/sessions/{session_id}` → `200` 🔒
+Full message history for one owned session.
+```json
+{ "id": "uuid", "title": "…", "learning_mode": "advanced",
+  "created_at": "…", "updated_at": "…",
+  "messages": [
+    { "id": "uuid", "role": "user", "content": "…", "meta": {}, "created_at": "…" },
+    { "id": "uuid", "role": "assistant", "content": "…",
+      "meta": { "learning_mode": "advanced", "sources": [], "model": "…" },
+      "created_at": "…" }
+  ] }
+```
+
+#### `DELETE /ask/sessions/{session_id}` → `204` 🔒
+Deletes the session and all of its messages.
 
 ---
 
