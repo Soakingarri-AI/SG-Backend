@@ -4,26 +4,27 @@ import { useState } from "react";
 import { ProductShell } from "@/components/ProductShell";
 import { api, ApiError } from "@/lib/api";
 
-type Mode = "beginner" | "normal" | "advanced";
+type LearningMode = "beginner" | "normal" | "advanced";
 
-interface Citation {
-  document_title: string;
-  source_path: string;
+interface AskSource {
+  title: string;
+  source_url: string | null;
   snippet: string;
-  score: number;
+  category: string;
 }
 interface AskResponse {
-  answer: string;
-  citations: Citation[];
   session_id: string;
-  mode: Mode;
+  message_id: string;
+  answer: string;
+  learning_mode: LearningMode;
+  sources: AskSource[];
 }
 
-const MODES: Mode[] = ["beginner", "normal", "advanced"];
+const MODES: LearningMode[] = ["beginner", "normal", "advanced"];
 
 export default function AskPage() {
-  const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<Mode>("normal");
+  const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<LearningMode>("normal");
   const [result, setResult] = useState<AskResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +36,11 @@ export default function AskPage() {
     try {
       const res = await api<AskResponse>("/ask", {
         method: "POST",
-        json: { query, mode, session_id: result?.session_id ?? null },
+        json: {
+          prompt,
+          learning_mode: mode,
+          session_id: result?.session_id ?? null,
+        },
       });
       setResult(res);
     } catch (err) {
@@ -69,13 +74,13 @@ export default function AskPage() {
 
       <form onSubmit={submit} className="flex gap-3">
         <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
           placeholder="Ask about the Mali Empire, Queen Amina, the Benin Bronzes…"
           className="flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-white placeholder:text-slate-500 focus:border-brand-500/50 focus:outline-none"
         />
         <button
-          disabled={loading || !query.trim()}
+          disabled={loading || !prompt.trim()}
           className="rounded-xl bg-brand-500 px-6 py-3 font-medium text-indigoblack transition hover:bg-brand-300 disabled:opacity-50"
         >
           {loading ? "Thinking…" : "Ask"}
@@ -93,19 +98,37 @@ export default function AskPage() {
             <h3 className="text-sm font-semibold uppercase tracking-wide text-brand-300">
               Sources
             </h3>
-            {result.citations.map((c, i) => (
+            {result.sources.length === 0 && (
+              <p className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs text-slate-400">
+                The source library is still loading — this answer draws on the
+                tutor&apos;s general knowledge and citations will appear here soon.
+              </p>
+            )}
+            {result.sources.map((s, i) => (
               <div
                 key={i}
                 className="rounded-xl border border-white/10 bg-white/[0.02] p-4"
               >
                 <p className="text-sm font-medium text-white">
-                  [{i + 1}] {c.document_title}
+                  [{i + 1}]{" "}
+                  {s.source_url ? (
+                    <a
+                      href={s.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline decoration-brand-500/50 hover:text-brand-300"
+                    >
+                      {s.title}
+                    </a>
+                  ) : (
+                    s.title
+                  )}
                 </p>
                 <p className="mt-1 line-clamp-3 text-xs text-slate-400">
-                  {c.snippet}
+                  {s.snippet}
                 </p>
-                <p className="mt-2 text-[10px] text-slate-500">
-                  relevance {(c.score * 100).toFixed(0)}%
+                <p className="mt-2 text-[10px] uppercase tracking-wide text-slate-500">
+                  {s.category.replaceAll("_", " ")}
                 </p>
               </div>
             ))}

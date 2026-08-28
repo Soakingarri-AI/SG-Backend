@@ -69,6 +69,14 @@ class ChatMessage(UUIDMixin, TimestampMixin, Base):
         ForeignKey("chat_sessions.id", ondelete="CASCADE"),
         index=True,
     )
+    # Denormalized owner id so per-user message queries/audits skip the session
+    # join. Nullable: rows written before this column existed have no value.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
     role: Mapped[MessageRole] = mapped_column(
         SAEnum(MessageRole, name="message_role", native_enum=True), nullable=False
     )

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     EMBEDDING_DIM: int = 1024  # Titan v2 default; keep in sync with models
 
+    # --- Ask SoakinGarri / RAG ---
+    # The vector index is still being built from the PDF corpus. Until it is
+    # loaded, retrieval is stubbed: RAG_ENABLED=false short-circuits to no
+    # sources while keeping the pgvector code path one env flip away.
+    RAG_ENABLED: bool = False
+    # In development only: return a canned mock chunk so the full context
+    # pipeline (templating, citations, UI panels) can be exercised end to end.
+    RAG_DEV_MOCK: bool = False
+    RAG_TOP_K: int = 3
+    ASK_HISTORY_MESSAGES: int = 12  # last N messages replayed as conversation memory
+    ASK_MAX_PROMPT_TOKENS: int = 1200  # ~4 chars/token heuristic over the 4000-char cap
+
     # --- AWS ---
     AWS_REGION: str = "us-east-1"
     BEDROCK_REGION: str = "us-east-1"

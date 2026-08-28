@@ -6,37 +6,11 @@ The ``*Structured`` models double as validation contracts passed to
 from __future__ import annotations
 
 import uuid
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
-# ----------------------------- Ask SoakinGarri ----------------------------- #
-class LearningMode(str, Enum):
-    beginner = "beginner"
-    normal = "normal"
-    advanced = "advanced"
-
-
-class AskRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=2000)
-    mode: LearningMode = LearningMode.normal
-    session_id: uuid.UUID | None = None
-
-
-class Citation(BaseModel):
-    document_title: str
-    source_path: str
-    snippet: str
-    score: float
-
-
-class AskResponse(BaseModel):
-    answer: str
-    citations: list[Citation]
-    session_id: uuid.UUID
-    mode: LearningMode
+# Ask SoakinGarri schemas live in ``app/schemas/ask.py``.
 
 
 # -------------------------------- ExamFlow -------------------------------- #
