@@ -22,6 +22,7 @@ dependencies = [
     "redis>=5.0",
     "boto3>=1.34",
     "anthropic>=0.30",
+    "openai>=1.40",
     "httpx>=0.27",
     "tenacity>=8.4",
     "python-slugify>=8.0",

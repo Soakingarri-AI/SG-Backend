@@ -7,8 +7,9 @@ Single entry point for every subdomain's LLM needs:
   * retry with exponential backoff
   * per-call token usage analytics
 
-Providers: Amazon Bedrock (default, production) or the Anthropic API
-(local/dev fallback). The public interface is provider-agnostic.
+Providers: Amazon Bedrock, the Anthropic API, or the OpenAI API — selected by
+``AI_PROVIDER``. The public interface is provider-agnostic; provider SDKs are
+imported lazily so only the configured one needs to be installed.
 """
 from __future__ import annotations
 
@@ -64,6 +65,13 @@ class AIService:
             import boto3
 
             return boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
+        if self.provider == "openai":
+            from openai import OpenAI
+
+            return OpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                timeout=settings.AI_TIMEOUT_SECONDS,
+            )
         # anthropic
         from anthropic import Anthropic
 
@@ -90,6 +98,8 @@ class AIService:
         try:
             if self.provider == "bedrock":
                 return self._complete_bedrock(system, messages, max_tokens, temperature)
+            if self.provider == "openai":
+                return self._complete_openai(system, messages, max_tokens, temperature)
             return self._complete_anthropic(system, messages, max_tokens, temperature)
         except AIServiceError:
             raise
@@ -108,6 +118,22 @@ class AIService:
         )
         text = "".join(block.text for block in resp.content if block.type == "text")
         usage = Usage(resp.usage.input_tokens, resp.usage.output_tokens)
+        return AIResult(text=text, usage=usage, raw=resp.model_dump())
+
+    def _complete_openai(
+        self, system: str, messages: list[dict[str, str]], max_tokens: int, temp: float
+    ) -> AIResult:
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": system}, *messages],
+            max_completion_tokens=max_tokens,
+            temperature=temp,
+        )
+        text = resp.choices[0].message.content or ""
+        usage = Usage(
+            resp.usage.prompt_tokens if resp.usage else 0,
+            resp.usage.completion_tokens if resp.usage else 0,
+        )
         return AIResult(text=text, usage=usage, raw=resp.model_dump())
 
     def _complete_bedrock(
@@ -191,6 +217,15 @@ class AIService:
                 payload = json.loads(resp["body"].read())
                 vectors.append(payload["embedding"])
             return vectors
+        if self.provider == "openai":
+            # ``dimensions`` shortens text-embedding-3 vectors to match the
+            # pgvector column width configured for the platform.
+            resp = self._client.embeddings.create(
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                input=texts,
+                dimensions=settings.EMBEDDING_DIM,
+            )
+            return [item.embedding for item in resp.data]
         # Anthropic has no first-party embedding endpoint; production uses Bedrock
         # Titan. Dev fallback returns a deterministic zero vector for wiring tests.
         return [[0.0] * settings.EMBEDDING_DIM for _ in texts]

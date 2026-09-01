@@ -50,12 +50,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_BURST: int = 20
 
     # --- AI ---
-    AI_PROVIDER: Literal["bedrock", "anthropic"] = "bedrock"
+    AI_PROVIDER: Literal["bedrock", "anthropic", "openai"] = "bedrock"
+    # Model id must match the provider: a Bedrock/Anthropic id for those
+    # providers, an OpenAI id (e.g. "gpt-4o-mini") when AI_PROVIDER=openai.
     AI_MODEL: str = "claude-opus-4-8"
     AI_EMBEDDING_MODEL: str = "amazon.titan-embed-text-v2:0"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     AI_MAX_RETRIES: int = 4
     AI_TIMEOUT_SECONDS: int = 60
     ANTHROPIC_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
     EMBEDDING_DIM: int = 1024  # Titan v2 default; keep in sync with models
 
     # --- Ask SoakinGarri / RAG ---
