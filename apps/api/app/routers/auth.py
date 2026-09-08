@@ -3,45 +3,51 @@
 A single account works across every subdomain. On login we set an
 ``access_token`` cookie scoped to ``.soakingarri.com`` (so the session is shared)
 *and* return the token pair in the body for header-based clients.
+
+Endpoints stay thin: rules live in ``app.services.auth_service``, token
+revocation in ``app.core.token_service``, and mail in
+``app.services.email_service``.
 """
 from __future__ import annotations
 
-import secrets
-import uuid
-
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from jose import JWTError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import token_service
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import rate_limited
-from app.core.redis import get_redis
-from app.core.security import (
-    create_access_token,
-    create_refresh_token,
-    decode_token,
-    hash_password,
-    verify_password,
-)
-from app.core import token_service
+from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.auth import (
+    AuthSession,
+    EmailVerificationConfirm,
     LogoutRequest,
+    MessageResponse,
+    PasswordChangeRequest,
     PasswordResetConfirm,
     PasswordResetRequest,
     RefreshRequest,
+    ResendVerificationRequest,
     TokenPair,
     UserCreate,
     UserLogin,
     UserRead,
 )
+from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-_RESET_PREFIX = "pwdreset:"
 
 
 def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
@@ -66,50 +72,116 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
     )
 
 
+def _start_session(response: Response, user: User) -> AuthSession:
+    """Issue a token pair for ``user``, set the cookies, and return the body."""
+    access = create_access_token(str(user.id))
+    refresh = create_refresh_token(str(user.id))
+    _set_auth_cookies(response, access, refresh)
+    return AuthSession(
+        access_token=access,
+        refresh_token=refresh,
+        user=UserRead.model_validate(user),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Registration and email verification
+# --------------------------------------------------------------------------- #
 @router.post(
     "/register",
     response_model=UserRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limited(10))],
     summary="Create a new account",
 )
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> User:
-    """Register a user. Emails are unique across the whole platform (409 on reuse)."""
-    existing = await db.scalar(select(User).where(User.email == payload.email))
-    if existing:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
-    user = User(
+async def register(
+    payload: UserCreate,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Register a user and email them a verification link.
+
+    Emails are unique across the whole platform (409 on reuse). The account
+    exists immediately but cannot sign in until the link is used.
+    """
+    return await auth_service.register(
+        db,
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        password=payload.password,
         full_name=payload.full_name,
+        background=background,
     )
-    db.add(user)
-    await db.flush()
-    await db.refresh(user)
-    return user
 
 
 @router.post(
+    "/verify-email",
+    response_model=AuthSession,
+    summary="Confirm an email address",
+)
+async def verify_email(
+    payload: EmailVerificationConfirm,
+    response: Response,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> AuthSession:
+    """Redeem a verification link and sign the user straight in.
+
+    Returns a token pair so the frontend can land the user in the app instead
+    of bouncing them back to a login form. `400` if the link is invalid, already
+    used, or expired — request a fresh one from `/verify-email/resend`.
+    """
+    user = await auth_service.verify_email(
+        db, token=payload.token, background=background
+    )
+    return _start_session(response, user)
+
+
+@router.post(
+    "/verify-email/resend",
+    response_model=MessageResponse,
+    dependencies=[Depends(rate_limited(3))],
+    summary="Resend the verification email",
+)
+async def resend_verification(
+    payload: ResendVerificationRequest,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Issue a fresh verification link, invalidating the previous one.
+
+    Always reports the same result so the endpoint cannot be used to discover
+    which addresses are registered.
+    """
+    return await auth_service.resend_verification(
+        db, email=payload.email, background=background
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Session lifecycle
+# --------------------------------------------------------------------------- #
+@router.post(
     "/login",
-    response_model=TokenPair,
+    response_model=AuthSession,
     dependencies=[Depends(rate_limited(10))],
     summary="Log in and receive a token pair",
 )
 async def login(
     payload: UserLogin, response: Response, db: AsyncSession = Depends(get_db)
-) -> TokenPair:
-    """Verify credentials, set the shared-domain auth cookies, and return the tokens."""
-    user = await db.scalar(select(User).where(User.email == payload.email))
-    if not user or not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
-    access = create_access_token(str(user.id))
-    refresh = create_refresh_token(str(user.id))
-    _set_auth_cookies(response, access, refresh)
-    return TokenPair(access_token=access, refresh_token=refresh)
+) -> AuthSession:
+    """Verify credentials, set the shared-domain auth cookies, and return tokens.
+
+    `401` for bad credentials. `403` when the address is not yet confirmed —
+    that response carries `X-Auth-Error-Code: email_not_verified`, so a client
+    can route to a "check your inbox" screen without parsing the message.
+    """
+    user = await auth_service.authenticate(
+        db, email=payload.email, password=payload.password
+    )
+    return _start_session(response, user)
 
 
-@router.post(
-    "/refresh", response_model=TokenPair, summary="Rotate the token pair"
-)
+@router.post("/refresh", response_model=TokenPair, summary="Rotate the token pair")
 async def refresh(
     request: Request,
     response: Response,
@@ -160,8 +232,6 @@ async def logout(
 ) -> None:
     """Clear the auth cookies and denylist the presented access/refresh tokens so
     they cannot be replayed before expiry."""
-    # Revoke whatever tokens the client presented (cookies and/or headers) so
-    # they cannot be replayed before their natural expiry.
     access = request.cookies.get("access_token")
     if not access:
         header = request.headers.get("Authorization", "")
@@ -191,60 +261,76 @@ async def me(current: User = Depends(get_current_user)) -> User:
     return current
 
 
+# --------------------------------------------------------------------------- #
+# Passwords
+# --------------------------------------------------------------------------- #
 @router.post(
     "/password-reset/request",
     dependencies=[Depends(rate_limited(5))],
-    summary="Request a password reset token",
+    summary="Request a password reset link",
 )
 async def request_password_reset(
-    payload: PasswordResetRequest, db: AsyncSession = Depends(get_db)
+    payload: PasswordResetRequest,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Issue a single-use, time-limited reset token.
+    """Email a single-use, time-limited reset link.
 
     Always returns the same message regardless of whether the email exists, so
-    the endpoint cannot be used to enumerate accounts. The token is delivered by
-    email; only in *development* is it returned in the body to enable testing
-    (staging mirrors production so a shared environment can never leak it).
+    the endpoint cannot be used to enumerate accounts. Only in *development* is
+    the token echoed in the body to enable testing (staging mirrors production
+    so a shared environment can never leak it).
     """
-    user = await db.scalar(select(User).where(User.email == payload.email))
-    reset_token: str | None = None
-    if user is not None:
-        reset_token = secrets.token_urlsafe(32)
-        await get_redis().set(
-            f"{_RESET_PREFIX}{reset_token}",
-            str(user.id),
-            ex=settings.PASSWORD_RESET_EXPIRE_MINUTES * 60,
-        )
-        # TODO: dispatch the reset email (SES) with the token link.
-
-    body: dict = {"message": "If that email is registered, a reset link has been sent."}
-    if reset_token and settings.ENVIRONMENT == "development":
-        body["reset_token"] = reset_token
-    return body
+    return await auth_service.request_password_reset(
+        db, email=payload.email, background=background
+    )
 
 
 @router.post(
-    "/password-reset/confirm", summary="Set a new password with a reset token"
+    "/password-reset/confirm",
+    response_model=MessageResponse,
+    summary="Set a new password with a reset token",
 )
 async def confirm_password_reset(
-    payload: PasswordResetConfirm, db: AsyncSession = Depends(get_db)
+    payload: PasswordResetConfirm,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    redis = get_redis()
-    key = f"{_RESET_PREFIX}{payload.token}"
-    user_id = await redis.get(key)
-    if not user_id:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Invalid or expired reset token"
-        )
-    await redis.delete(key)  # single use
+    """Consume a reset link, set the new password, and sign every device out.
 
-    user = await db.get(User, uuid.UUID(user_id))
-    if user is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired reset token")
-
-    user.hashed_password = hash_password(payload.new_password)
-    # Kill every outstanding session so a compromised password can't linger.
-    await token_service.invalidate_user_sessions(
-        str(user.id), settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    Completing this also confirms the address, since receiving the link proves
+    control of the mailbox.
+    """
+    await auth_service.confirm_password_reset(
+        db,
+        token=payload.token,
+        new_password=payload.new_password,
+        background=background,
     )
     return {"message": "Password updated. Please log in again."}
+
+
+@router.post(
+    "/password/change",
+    response_model=MessageResponse,
+    summary="Change your password while signed in",
+)
+async def change_password(
+    payload: PasswordChangeRequest,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> dict:
+    """Re-check the current password, rotate it, and revoke all sessions.
+
+    The caller's own tokens are invalidated too, so clients must log in again
+    with the new password.
+    """
+    await auth_service.change_password(
+        db,
+        user=current,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+        background=background,
+    )
+    return {"message": "Password changed. Please log in again."}

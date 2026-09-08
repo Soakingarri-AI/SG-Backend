@@ -20,6 +20,7 @@ account and session work across all of them; every module mounts under the
 - [Endpoints](#endpoints)
   - [System](#system)
   - [Auth](#auth)
+  - [Transactional email](#transactional-email)
   - [Ask SoakinGarri](#ask-soakingarri)
   - [ExamFlow](#examflow)
   - [AfroSimulator](#afrosimulator)
@@ -47,10 +48,11 @@ All application endpoints below are relative to `<base>/api/v1`. For example
 
 Auth is JWT-based (HS256) with separate **access** and **refresh** tokens.
 
-1. `POST /auth/register` — create an account.
-2. `POST /auth/login` — receive `{ access_token, refresh_token }` **and** get the
-   tokens set as cookies scoped to `.soakingarri.com` (so one login works on every
-   subdomain).
+1. `POST /auth/register` — create an account. A verification email goes out; the
+   account cannot log in until `POST /auth/verify-email` confirms the address.
+2. `POST /auth/login` — receive `{ access_token, refresh_token, user }` **and** get
+   the tokens set as cookies scoped to `.soakingarri.com` (so one login works on
+   every subdomain).
 3. Send the access token on protected requests, either way:
    - **Header:** `Authorization: Bearer <access_token>`, or
    - **Cookie:** `access_token` (sent automatically by the browser).
@@ -66,8 +68,12 @@ Token lifetimes (defaults, configurable): access **30 min**, refresh **14 days**
 Even though JWTs are stateless, they are revocable via Redis:
 
 - **Per-token denylist** (`jti`): set on logout and on refresh rotation.
-- **Per-user session epoch:** a password reset stamps a timestamp; every token
+- **Per-user session epoch:** any password change stamps a timestamp; every token
   issued before it is rejected, killing all outstanding sessions at once.
+
+Verification and reset links are separate from JWTs: opaque random strings,
+stored only as SHA-256 hashes with a TTL, single-use, and superseded whenever a
+newer link of the same kind is issued.
 
 ---
 
@@ -86,7 +92,7 @@ Pydantic/FastAPI.
 |--------|---------|
 | `400` | Bad request (e.g. invalid/expired reset token) |
 | `401` | Missing, invalid, expired, or revoked credentials |
-| `403` | Resource exists but belongs to another user (Ask sessions) |
+| `403` | Email not yet verified (`X-Auth-Error-Code: email_not_verified`), account disabled, or a resource owned by another user (Ask sessions) |
 | `404` | Resource not found (or not owned by the caller, in the older modules) |
 | `409` | Conflict (e.g. email already registered, session already submitted) |
 | `422` | Request body failed validation |
@@ -100,9 +106,10 @@ A fixed **60-second window** counter, keyed by authenticated user id (or client 
 when anonymous) **and** endpoint path, backed by Redis. The user id is taken from
 the access token (header or cookie) with a local signature check; anonymous
 requests are keyed by the proxy-supplied `X-Forwarded-For` address when present,
-else the socket peer. Defaults: 60 requests/min; `login` is capped at 10/min and
-`password-reset/request` at 5/min. On breach: `429 Too Many Requests` with a
-`Retry-After` (seconds) header.
+else the socket peer. Defaults: 60 requests/min; `login` and `register` are capped
+at 10/min, `password-reset/request` at 5/min, and `verify-email/resend` at 3/min
+(the tighter limits keep the mail-sending endpoints from being used to flood an
+inbox). On breach: `429 Too Many Requests` with a `Retry-After` (seconds) header.
 
 ---
 
@@ -123,24 +130,63 @@ Liveness/metadata probe. Unauthenticated, unprefixed.
 
 ### Auth
 
+> **Email verification is required.** A new account is created unverified and
+> **cannot log in** until it confirms its address. Accounts that existed before
+> verification shipped were backfilled as verified, so nobody was locked out.
+> The gate can be lifted with `REQUIRE_EMAIL_VERIFICATION=false`.
+
+**The signup journey:** `register` → email arrives → `verify-email` (which
+returns a token pair, so the user lands signed in) → done. If the link expires
+or is lost, `verify-email/resend` issues a new one and invalidates the old.
+
 #### `POST /auth/register` → `201`
 ```json
 // request
 { "email": "user@example.com", "password": "supersecret1", "full_name": "Ada" }
 // response (UserRead)
 { "id": "uuid", "email": "user@example.com", "full_name": "Ada",
-  "is_active": true, "created_at": "2026-07-21T09:00:00Z" }
+  "is_active": true, "is_verified": false, "created_at": "2026-07-21T09:00:00Z" }
 ```
-`password` must be 8–128 chars. Returns `409` if the email already exists.
+Sends the verification email. `password` must be 8–128 chars and is screened
+against common passwords (`422` if it fails). `409` if the email already exists.
+Rate limited to 10/min.
+
+#### `POST /auth/verify-email` → `200`
+```json
+// request
+{ "token": "<token from the emailed link>" }
+// response (AuthSession) + Set-Cookie
+{ "access_token": "jwt...", "refresh_token": "jwt...", "token_type": "bearer",
+  "user": { "id": "uuid", "email": "...", "is_verified": true, ... } }
+```
+Confirms the address and **signs the user straight in**, so the frontend can
+route them into the app rather than back to a login form. Sends the welcome
+email. `400` if the link is invalid, expired, or already used. Tokens are
+single-use and live 24 h.
+
+#### `POST /auth/verify-email/resend` → `200`
+```json
+// request
+{ "email": "user@example.com" }
+// response (always identical, to prevent account enumeration)
+{ "message": "If that email is registered, we've sent a link to it." }
+```
+Issues a fresh link and invalidates the previous one. Nothing is sent for an
+unknown or already-verified address. Rate limited to 3/min.
 
 #### `POST /auth/login` → `200`
 ```json
 // request
 { "email": "user@example.com", "password": "supersecret1" }
-// response (TokenPair) + Set-Cookie: access_token, refresh_token
-{ "access_token": "jwt...", "refresh_token": "jwt...", "token_type": "bearer" }
+// response (AuthSession) + Set-Cookie: access_token, refresh_token
+{ "access_token": "jwt...", "refresh_token": "jwt...", "token_type": "bearer",
+  "user": { "id": "uuid", "email": "...", "is_verified": true, ... } }
 ```
-`401` on bad credentials. Rate limited to 10/min.
+`401` on bad credentials — identical response whether the address is unknown or
+the password is wrong. `403` when the address is unconfirmed; that response
+carries the header **`X-Auth-Error-Code: email_not_verified`**, so a client can
+branch to a "check your inbox" screen without parsing the message. Rate limited
+to 10/min.
 
 #### `POST /auth/refresh` → `200`
 ```json
@@ -168,16 +214,52 @@ Returns the current `UserRead`.
 // response (always identical, to prevent account enumeration)
 { "message": "If that email is registered, a reset link has been sent." }
 ```
-The token is delivered by email. **Only in development** does the response also
+The link is delivered by email. **Only in development** does the response also
 include `"reset_token": "..."` to enable testing (staging behaves like
-production). Rate limited to 5/min. Token TTL: 30 min.
+production). Requesting a second link invalidates the first. Rate limited to
+5/min. Token TTL: 30 min.
 
 #### `POST /auth/password-reset/confirm` → `200`
 ```json
 { "token": "<reset_token>", "new_password": "newsecret1" }
 ```
-Updates the password, consumes the token (single-use), and **invalidates all
-existing sessions**. `400` if the token is invalid or expired.
+Updates the password, consumes the token (single-use), **invalidates all
+existing sessions**, and emails a security notice. Completing this also marks
+the address verified — receiving the link proves control of the mailbox. `400`
+if the token is invalid or expired.
+
+#### `POST /auth/password/change` → `200` 🔒
+```json
+// request
+{ "current_password": "supersecret1", "new_password": "newsecret1" }
+// response
+{ "message": "Password changed. Please log in again." }
+```
+For a signed-in user. Re-checks the current password, then **revokes every
+session including the caller's** — clients must log in again — and emails a
+security notice. `400` if the current password is wrong or the new one matches it.
+
+---
+
+### Transactional email
+
+Sent through [Resend](https://resend.com) from `noreply@soakingarri.com`. Four
+messages exist, all rendered from templates in `app/templates/email/`
+(`_layout.html` holds the shared chrome; edit it once to restyle everything):
+
+| Trigger | Email |
+|---------|-------|
+| `register` | Confirm your email (24 h link) |
+| `verify-email/resend` | Confirm your email (new link, old one dies) |
+| `verify-email` success | Welcome — what you can do next |
+| `password-reset/request` | Reset your password (30 min link) |
+| password reset or change | Security notice: your password changed |
+
+Links point at `FRONTEND_URL`, so the frontend must serve `/verify-email` and
+`/reset-password` routes that read `?token=` and POST it to the matching
+endpoint. **Sending never blocks a request** — mail goes out in a background
+task, so a Resend outage cannot stop a registration. With no `RESEND_API_KEY`
+configured (local dev), emails are logged instead of sent.
 
 ---
 

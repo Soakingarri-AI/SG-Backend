@@ -17,22 +17,6 @@ from app.services.ai_service import AIResult, Usage, ai_service
 ASK = "/api/v1/ask"
 
 
-def _email() -> str:
-    return f"authtest-ask-{uuid.uuid4().hex[:12]}@example.com"
-
-
-async def _auth_headers(client: AsyncClient) -> dict[str, str]:
-    email = _email()
-    resp = await client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "password": "supersecret1", "full_name": "Ask Tester"},
-    )
-    assert resp.status_code == 201, resp.text
-    resp = await client.post(
-        "/api/v1/auth/login", json={"email": email, "password": "supersecret1"}
-    )
-    assert resp.status_code == 200, resp.text
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
 @dataclass
@@ -58,9 +42,9 @@ def mock_ai(monkeypatch: pytest.MonkeyPatch) -> AICapture:
 # Session creation + persistence + stubbed-RAG contract
 # --------------------------------------------------------------------------- #
 async def test_ask_creates_session_and_persists_both_turns(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     prompt = "Who was Mansa Musa and why does his hajj matter?"
 
     resp = await client.post(ASK, json={"prompt": prompt}, headers=headers)
@@ -96,9 +80,9 @@ async def test_ask_creates_session_and_persists_both_turns(
 
 
 async def test_multi_turn_replays_history_into_the_model(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     first = "Explain the Benin Bronzes."
     r1 = await client.post(ASK, json={"prompt": first}, headers=headers)
     session_id = r1.json()["session_id"]
@@ -124,9 +108,9 @@ async def test_multi_turn_replays_history_into_the_model(
 
 
 async def test_sessions_ordered_by_recency(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     s1 = (await client.post(ASK, json={"prompt": "First topic"}, headers=headers)).json()
     s2 = (await client.post(ASK, json={"prompt": "Second topic"}, headers=headers)).json()
     assert s1["session_id"] != s2["session_id"]
@@ -144,9 +128,9 @@ async def test_sessions_ordered_by_recency(
 # Learning modes
 # --------------------------------------------------------------------------- #
 async def test_learning_modes_select_distinct_system_styles(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     expectations = {
         "beginner": "Beginner mode.",
         "normal": "Normal mode.",
@@ -167,9 +151,9 @@ async def test_learning_modes_select_distinct_system_styles(
 
 
 async def test_mode_switch_updates_session_meta(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     r1 = await client.post(
         ASK, json={"prompt": "Start easy", "learning_mode": "beginner"}, headers=headers
     )
@@ -186,8 +170,8 @@ async def test_mode_switch_updates_session_meta(
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-async def test_prompt_length_bounds(client: AsyncClient, mock_ai: AICapture) -> None:
-    headers = await _auth_headers(client)
+async def test_prompt_length_bounds(client: AsyncClient, auth_headers, mock_ai: AICapture) -> None:
+    headers = await auth_headers()
     assert (
         await client.post(ASK, json={"prompt": ""}, headers=headers)
     ).status_code == 422
@@ -198,9 +182,9 @@ async def test_prompt_length_bounds(client: AsyncClient, mock_ai: AICapture) -> 
 
 
 async def test_whitespace_only_prompt_rejected(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     resp = await client.post(ASK, json={"prompt": " ​ ​ "}, headers=headers)
     assert resp.status_code == 422
     assert not mock_ai.calls
@@ -218,10 +202,10 @@ async def test_endpoints_require_authentication(client: AsyncClient) -> None:
 
 
 async def test_foreign_session_is_forbidden(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    owner = await _auth_headers(client)
-    intruder = await _auth_headers(client)
+    owner = await auth_headers()
+    intruder = await auth_headers()
     sid = (await client.post(ASK, json={"prompt": "mine"}, headers=owner)).json()[
         "session_id"
     ]
@@ -242,8 +226,10 @@ async def test_foreign_session_is_forbidden(
     assert (await client.get(f"{ASK}/sessions/{sid}", headers=owner)).status_code == 200
 
 
-async def test_unknown_session_is_404(client: AsyncClient, mock_ai: AICapture) -> None:
-    headers = await _auth_headers(client)
+async def test_unknown_session_is_404(
+    client: AsyncClient, auth_headers, mock_ai: AICapture
+) -> None:
+    headers = await auth_headers()
     ghost = uuid.uuid4()
     assert (await client.get(f"{ASK}/sessions/{ghost}", headers=headers)).status_code == 404
     assert (await client.delete(f"{ASK}/sessions/{ghost}", headers=headers)).status_code == 404
@@ -258,9 +244,9 @@ async def test_unknown_session_is_404(client: AsyncClient, mock_ai: AICapture) -
 # Deletion
 # --------------------------------------------------------------------------- #
 async def test_delete_removes_session_and_messages(
-    client: AsyncClient, mock_ai: AICapture
+    client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:
-    headers = await _auth_headers(client)
+    headers = await auth_headers()
     sid = (await client.post(ASK, json={"prompt": "temp"}, headers=headers)).json()[
         "session_id"
     ]

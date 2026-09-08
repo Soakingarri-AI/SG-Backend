@@ -42,7 +42,7 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["prompts/*.md"]
+app = ["prompts/*.md", "templates/email/*.html"]
 
 [tool.ruff]
 line-length = 100

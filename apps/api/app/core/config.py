@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, PostgresDsn, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -38,7 +38,27 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
     PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
+    # When true, an account must confirm its email before it can log in.
+    # Accounts that predate email verification were backfilled as verified.
+    REQUIRE_EMAIL_VERIFICATION: bool = True
     COOKIE_DOMAIN: str = ".soakingarri.com"
+
+    # --- Email (Resend) ---
+    # Accepts either RESEND_API_KEY or the shorter RESEND_API already used in
+    # the deployed .env files. Unset disables sending: emails are logged
+    # instead of dispatched, so local dev needs no credentials.
+    RESEND_API_KEY: str | None = Field(
+        default=None, validation_alias=AliasChoices("RESEND_API_KEY", "RESEND_API")
+    )
+    EMAIL_FROM: str = "noreply@soakingarri.com"
+    EMAIL_FROM_NAME: str = "SoakinGarri AI"
+    EMAIL_REPLY_TO: str | None = None
+    EMAIL_LOGO_URL: str = "https://www.soakingarri.com/sologo.png"
+    EMAIL_TIMEOUT_SECONDS: int = 15
+    # Base URL of the user-facing app; verification and reset links are built
+    # from it, so it must match wherever the frontend is actually served.
+    FRONTEND_URL: str = "https://soakingarri-frontend.vercel.app"
 
     # --- CORS ---
     # ``NoDecode`` stops pydantic-settings from JSON-decoding the env value so the
@@ -101,6 +121,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
+
+    @property
+    def email_enabled(self) -> bool:
+        """False when no Resend credential is configured (emails are logged)."""
+        return bool(self.RESEND_API_KEY)
 
 
 @lru_cache
