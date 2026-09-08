@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -25,14 +26,30 @@ from app.routers import (
     memes,
 )
 
-# Uvicorn only configures its own loggers, so without this the application's
-# own log records are discarded — including the ones reporting a failed
-# transactional email, which is deliberately non-fatal and would otherwise
-# fail silently.
-logging.basicConfig(
-    level=settings.LOG_LEVEL,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+def _configure_logging() -> None:
+    """Send this application's own log records to stdout.
+
+    Uvicorn configures only its own loggers, so without this every record from
+    ``app.*`` is discarded — including the ones reporting a failed transactional
+    email, which is deliberately non-fatal and would otherwise fail silently.
+
+    A handler is attached to the ``app`` namespace rather than calling
+    ``logging.basicConfig``, which is a no-op once the root logger already has
+    handlers and would leave us just as blind.
+    """
+    app_logger = logging.getLogger("app")
+    if app_logger.handlers:  # already configured (e.g. reload)
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    )
+    app_logger.addHandler(handler)
+    app_logger.setLevel(settings.LOG_LEVEL)
+    app_logger.propagate = False
+
+
+_configure_logging()
 
 
 @asynccontextmanager
