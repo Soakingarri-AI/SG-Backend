@@ -6,6 +6,7 @@ locally it also permits ``*.localhost`` for subdomain dev.
 """
 from __future__ import annotations
 
+import logging
 import re
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,15 @@ from app.routers import (
     factorizer,
     infiniteparts,
     memes,
+)
+
+# Uvicorn only configures its own loggers, so without this the application's
+# own log records are discarded — including the ones reporting a failed
+# transactional email, which is deliberately non-fatal and would otherwise
+# fail silently.
+logging.basicConfig(
+    level=settings.LOG_LEVEL,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 
 

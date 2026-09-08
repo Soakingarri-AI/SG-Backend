@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # --- Core ---
     ENVIRONMENT: Literal["development", "staging", "production"] = "development"
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     PROJECT_NAME: str = "SoakinGarri AI"
     ROOT_DOMAIN: str = "soakingarri.com"
     API_V1_PREFIX: str = "/api/v1"
