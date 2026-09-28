@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+logs/
+state.json
+state.tmp
+
+# Live credential - never commit
+service_account.json
+*.pem

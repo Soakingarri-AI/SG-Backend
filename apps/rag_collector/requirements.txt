@@ -1,0 +1,24 @@
+# Core Google Sheets stack
+gspread==6.2.1
+google-auth==2.32.0
+google-auth-oauthlib==1.2.1
+google-api-python-client==2.137.0
+
+# Search.
+#
+# Use `ddgs`, NOT the older `duckduckgo-search`. The latter was renamed and is
+# now sunset: on current infrastructure every query returns zero results, and
+# it emits a deprecation RuntimeWarning on import. The collector imports either
+# one, but only `ddgs` actually works and only `ddgs` exposes the brave/bing
+# backends that honour `filetype:` and `site:` operators.
+ddgs==9.14.4
+
+# HTTP + data
+requests==2.32.3
+urllib3==2.2.2
+pandas==2.2.2
+pydantic==2.8.2
+
+# Author lookup (author_resolver.py): reads the byline, DOI and metadata of
+# PDFs no repository API can attribute. Pure Python, no system deps.
+pypdf==6.19.0
