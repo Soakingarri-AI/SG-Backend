@@ -12,6 +12,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential curl \
     && rm -rf /var/lib/apt/lists/*
+# Mount point for the chat-upload volume. It has to exist in the image so a
+# fresh named volume inherits its ownership; otherwise the volume is created
+# root-owned and the non-root prod user cannot write to it.
+RUN mkdir -p /var/lib/soakingarri/uploads
 COPY pyproject.toml ./
 
 # ---------- dev ----------
@@ -26,7 +30,8 @@ FROM base AS prod
 RUN pip install .
 COPY . .
 # Non-root for ECS security posture.
-RUN useradd -m -u 10001 appuser && chown -R appuser /app
+RUN useradd -m -u 10001 appuser \
+    && chown -R appuser /app /var/lib/soakingarri
 USER appuser
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
