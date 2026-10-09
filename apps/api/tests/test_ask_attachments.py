@@ -147,6 +147,26 @@ async def test_image_is_sent_as_a_vision_part(
     assert resp.json()["attachments"][0]["kind"] == "image"
 
 
+async def test_image_turn_tells_the_tutor_a_picture_is_attached(
+    client: AsyncClient, auth_headers, mock_ai: AICapture
+) -> None:
+    """Without a line naming the image, the grounded tutor prompt makes the
+    model answer "I can't determine that" instead of looking at the picture."""
+    headers = await auth_headers()
+    attachment_id = await _upload(client, headers, png_bytes(), "diagram.png")
+
+    await client.post(
+        ASK,
+        headers=headers,
+        json={"prompt": "What is in this?", "attachment_ids": [attachment_id]},
+    )
+
+    sent = mock_ai.last_text
+    assert _OPEN_RE.search(sent), "image-only turns still need the attachment block"
+    assert "diagram.png" in sent
+    assert "image" in sent.lower()
+
+
 async def test_provider_translation_for_images(
     client: AsyncClient, auth_headers, mock_ai: AICapture
 ) -> None:

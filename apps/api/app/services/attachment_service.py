@@ -163,17 +163,28 @@ async def delete(db: AsyncSession, attachment: Attachment) -> None:
 
 
 def describe_for_prompt(attachments: list[Attachment]) -> str:
-    """Render document attachments as labelled, citable blocks.
+    """Render the attachment manifest that goes into the prompt.
 
-    Only text is returned; images are handled separately as vision content.
-    The text is already sanitised at extraction time, and the caller wraps
-    this whole block in the untrusted-content template.
+    Document text is included inline. Images carry no text, but they are still
+    listed: the image itself rides along as a separate vision part, and without
+    a line naming it the tutor has no idea it was given a picture and falls
+    back on "I can't determine that" rather than looking.
+
+    Text is already sanitised at extraction time, and the caller wraps this
+    whole block in the untrusted-content template.
     """
     blocks: list[str] = []
     for index, attachment in enumerate(attachments, start=1):
-        if attachment.kind is not AttachmentKind.document:
-            continue
         label = f"[Attachment {index}: {attachment.filename}]"
+
+        if attachment.kind is AttachmentKind.image:
+            blocks.append(
+                f"{label}\n(This is an image attached to this message. It is "
+                "included directly below as a picture — read it and answer from "
+                "what you can see in it.)"
+            )
+            continue
+
         if attachment.extraction_status in (
             ExtractionStatus.failed,
             ExtractionStatus.unsupported,
