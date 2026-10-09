@@ -9,6 +9,7 @@ from typing import Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
@@ -17,16 +18,21 @@ down_revision: Union[str, None] = "0003_user_email_verification"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_KIND = sa.Enum("document", "image", name="attachment_kind")
-_STATUS = sa.Enum(
-    "ok", "empty", "truncated", "unsupported", "failed", name="extraction_status"
+_KIND_VALUES = ("document", "image")
+_STATUS_VALUES = ("ok", "empty", "truncated", "unsupported", "failed")
+
+# The types are created explicitly below, so the column definitions must not
+# try to emit CREATE TYPE a second time inside create_table.
+_KIND = postgresql.ENUM(*_KIND_VALUES, name="attachment_kind", create_type=False)
+_STATUS = postgresql.ENUM(
+    *_STATUS_VALUES, name="extraction_status", create_type=False
 )
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    _KIND.create(bind, checkfirst=True)
-    _STATUS.create(bind, checkfirst=True)
+    sa.Enum(*_KIND_VALUES, name="attachment_kind").create(bind, checkfirst=True)
+    sa.Enum(*_STATUS_VALUES, name="extraction_status").create(bind, checkfirst=True)
 
     op.create_table(
         "attachments",
@@ -79,5 +85,5 @@ def downgrade() -> None:
     op.drop_index("ix_attachments_user_id", table_name="attachments")
     op.drop_table("attachments")
     bind = op.get_bind()
-    _STATUS.drop(bind, checkfirst=True)
-    _KIND.drop(bind, checkfirst=True)
+    sa.Enum(name="extraction_status").drop(bind, checkfirst=True)
+    sa.Enum(name="attachment_kind").drop(bind, checkfirst=True)
