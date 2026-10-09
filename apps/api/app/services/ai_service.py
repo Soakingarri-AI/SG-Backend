@@ -90,7 +90,7 @@ class AIService:
         self,
         *,
         system: str,
-        messages: list[dict[str, str]],
+        messages: list[dict],
         max_tokens: int = 1500,
         temperature: float = 0.7,
     ) -> AIResult:
@@ -107,25 +107,28 @@ class AIService:
             raise AIServiceError(str(exc)) from exc
 
     def _complete_anthropic(
-        self, system: str, messages: list[dict[str, str]], max_tokens: int, temp: float
+        self, system: str, messages: list[dict], max_tokens: int, temp: float
     ) -> AIResult:
         resp = self._client.messages.create(
             model=self.model,
             system=system,
             max_tokens=max_tokens,
             temperature=temp,
-            messages=messages,
+            messages=_to_anthropic_messages(messages),
         )
         text = "".join(block.text for block in resp.content if block.type == "text")
         usage = Usage(resp.usage.input_tokens, resp.usage.output_tokens)
         return AIResult(text=text, usage=usage, raw=resp.model_dump())
 
     def _complete_openai(
-        self, system: str, messages: list[dict[str, str]], max_tokens: int, temp: float
+        self, system: str, messages: list[dict], max_tokens: int, temp: float
     ) -> AIResult:
         resp = self._client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "system", "content": system}, *messages],
+            messages=[
+                {"role": "system", "content": system},
+                *_to_openai_messages(messages),
+            ],
             max_completion_tokens=max_tokens,
             temperature=temp,
         )
@@ -137,14 +140,15 @@ class AIService:
         return AIResult(text=text, usage=usage, raw=resp.model_dump())
 
     def _complete_bedrock(
-        self, system: str, messages: list[dict[str, str]], max_tokens: int, temp: float
+        self, system: str, messages: list[dict], max_tokens: int, temp: float
     ) -> AIResult:
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "system": system,
             "max_tokens": max_tokens,
             "temperature": temp,
-            "messages": messages,
+            # Bedrock speaks the Anthropic content-block format.
+            "messages": _to_anthropic_messages(messages),
         }
         resp = self._client.invoke_model(
             modelId=self.model, body=json.dumps(body)
@@ -166,7 +170,7 @@ class AIService:
         self,
         *,
         system: str,
-        messages: list[dict[str, str]],
+        messages: list[dict],
         schema: type[T],
         max_tokens: int = 1500,
         temperature: float = 0.4,
@@ -229,6 +233,61 @@ class AIService:
         # Anthropic has no first-party embedding endpoint; production uses Bedrock
         # Titan. Dev fallback returns a deterministic zero vector for wiring tests.
         return [[0.0] * settings.EMBEDDING_DIM for _ in texts]
+
+
+# --------------------------------------------------------------------------- #
+# Multimodal message translation
+# --------------------------------------------------------------------------- #
+# Callers build messages in one provider-neutral shape. ``content`` is either a
+# plain string or a list of parts:
+#
+#   {"type": "text",  "text": "..."}
+#   {"type": "image", "media_type": "image/png", "data": "<base64>"}
+#
+# Each provider adapter below translates that into its own wire format, so no
+# caller needs to know which provider is configured.
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    converted: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            converted.append(message)
+            continue
+        parts: list[dict] = []
+        for part in content or []:
+            if part.get("type") == "image":
+                data_url = f"data:{part['media_type']};base64,{part['data']}"
+                parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            else:
+                parts.append({"type": "text", "text": part.get("text", "")})
+        converted.append({"role": message["role"], "content": parts})
+    return converted
+
+
+def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    converted: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            converted.append(message)
+            continue
+        parts: list[dict] = []
+        for part in content or []:
+            if part.get("type") == "image":
+                parts.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": part["media_type"],
+                            "data": part["data"],
+                        },
+                    }
+                )
+            else:
+                parts.append({"type": "text", "text": part.get("text", "")})
+        converted.append({"role": message["role"], "content": parts})
+    return converted
 
 
 def _strip_fences(text: str) -> str:

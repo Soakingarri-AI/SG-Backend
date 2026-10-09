@@ -22,6 +22,7 @@ account and session work across all of them; every module mounts under the
   - [Auth](#auth)
   - [Transactional email](#transactional-email)
   - [Ask SoakinGarri](#ask-soakingarri)
+  - [Uploads](#uploads)
   - [ExamFlow](#examflow)
   - [AfroSimulator](#afrosimulator)
   - [Meme Generator](#meme-generator)
@@ -94,7 +95,9 @@ Pydantic/FastAPI.
 | `401` | Missing, invalid, expired, or revoked credentials |
 | `403` | Email not yet verified (`X-Auth-Error-Code: email_not_verified`), account disabled, or a resource owned by another user (Ask sessions) |
 | `404` | Resource not found (or not owned by the caller, in the older modules) |
-| `409` | Conflict (e.g. email already registered, session already submitted) |
+| `409` | Conflict (e.g. email already registered, session already submitted, attachment already used in another conversation) |
+| `413` | Upload exceeds the per-file limit or the account storage quota |
+| `415` | Upload type not supported |
 | `422` | Request body failed validation |
 | `429` | Rate limit exceeded — see `Retry-After` header |
 
@@ -281,7 +284,8 @@ Submit a question; creates a new session or continues an existing one.
 // request (AskRequest)
 { "prompt": "Who was Queen Amina of Zazzau?",   // 1–4000 chars
   "learning_mode": "normal",        // "beginner" | "normal" | "advanced"
-  "session_id": null }              // optional; continues an existing chat
+  "session_id": null,               // optional; continues an existing chat
+  "attachment_ids": [] }            // optional; ids from POST /uploads
 // response (AskResponse)
 { "session_id": "uuid",
   "message_id": "uuid",             // id of the persisted assistant message
@@ -290,11 +294,22 @@ Submit a question; creates a new session or continues an existing one.
   "sources": [                      // [] while the index is loading
     { "title": "Queen Amina", "source_url": null,
       "snippet": "…", "category": "african_history" }
+  ],
+  "attachments": [                  // echoes the files used on this turn
+    { "id": "uuid", "filename": "notes.pdf",
+      "kind": "document", "extraction_status": "ok" }
   ] }
 ```
 Both turns are persisted to the shared chat store. Prompts are sanitized and
 token-budget-checked before any model call; a prompt that is empty after
 sanitization returns `422`.
+
+**Attachments.** Upload files first with `POST /uploads`, then pass their ids in
+`attachment_ids` (see [Uploads](#uploads)). Document text is inserted into the
+prompt and images are sent to the model as images. Attachment errors surface
+before the model is called: `403` for someone else's file, `404` for an unknown
+id, `409` if the file was already used in a different conversation, and `422`
+for more than `max_files_per_message`.
 
 #### `GET /ask/sessions` → `200` 🔒
 The caller's Ask sessions, most recently active first.
@@ -318,6 +333,104 @@ Full message history for one owned session.
 
 #### `DELETE /ask/sessions/{session_id}` → `204` 🔒
 Deletes the session and all of its messages.
+
+---
+
+### Uploads
+
+File attachments for the chat composer. Files are uploaded **on their own**, then
+referenced by id when the message is sent — so the UI can show a thumbnail,
+a progress bar and a remove button before the user commits to a question.
+
+**The flow:**
+
+1. `POST /uploads` (multipart) for each file → returns an `id`.
+2. `POST /ask` with `attachment_ids: [...]`.
+3. The file becomes bound to that conversation and can be re-sent within it.
+
+Accepted types (**sniffed from the file's own bytes**, not the declared
+`Content-Type`, so a renamed `.exe` is rejected):
+
+| Family | Types | What the model gets |
+|---|---|---|
+| Documents | PDF, DOCX | extracted text |
+| Text | TXT, MD, CSV, JSON | the text itself |
+| Images | PNG, JPEG, WEBP, GIF | the image, via a vision model |
+
+Defaults: **10 MB** per file, **5 files** per message, **200 MB** per account,
+and extracted text capped at 20 000 characters. Read the live values from
+`GET /uploads/limits` rather than hardcoding them.
+
+#### `POST /uploads` → `201` 🔒
+`multipart/form-data` with a single `file` part.
+```json
+// response (AttachmentDetail)
+{ "id": "uuid",
+  "filename": "past-questions.pdf",   // sanitized; directories stripped
+  "content_type": "application/pdf",  // the detected type, not the declared one
+  "size_bytes": 184320,
+  "kind": "document",                 // "document" | "image"
+  "extraction_status": "ok",          // see the table below
+  "session_id": null,                 // set once used in a message
+  "created_at": "2026-10-09T10:00:00Z",
+  "text_preview": "WAEC 2019 Paper 2…",  // first 600 chars, null for images
+  "meta": { "page_count": 4 } }
+```
+
+`extraction_status` is what to surface in the UI:
+
+| Status | Meaning | Suggested UI |
+|---|---|---|
+| `ok` | text extracted | normal file chip |
+| `truncated` | too long; only the first part is used | "large file, partially read" |
+| `empty` | parsed but held no text (usually a **scanned** PDF) | warn: the model can't read this; suggest a photo instead |
+| `failed` | corrupt or unreadable | warn and offer removal |
+| `unsupported` | type not accepted | reject before upload using `/limits` |
+
+Errors: `413` too large or over quota, `415` unsupported type, `422` empty file,
+`503` storage unavailable. Rate limited to 30/min.
+
+#### `GET /uploads/limits` → `200` 🔒
+```json
+{ "max_bytes": 10485760, "max_files_per_message": 5,
+  "quota_bytes": 209715200, "used_bytes": 184320,
+  "accepted_types": ["application/pdf", "image/png", "…"] }
+```
+Use it to drive the file picker's `accept` attribute and to validate client-side
+before spending the user's bandwidth.
+
+#### `GET /uploads` → `200` 🔒
+The caller's uploads, newest first. Optional `?session_id=<uuid>` filter.
+
+#### `GET /uploads/{id}` → `200` 🔒
+One `AttachmentDetail`. `403` for another account's file, `404` if unknown.
+
+#### `GET /uploads/{id}/content` → `200` 🔒
+The original bytes, served with `Content-Disposition: attachment` and
+`X-Content-Type-Options: nosniff`.
+
+> A browser cannot put an `Authorization` header on `<img src>`. To show a
+> thumbnail, fetch this endpoint with the token and render the blob:
+> ```js
+> const { data } = await api.get(`/uploads/${id}/content`, { responseType: "blob" });
+> setSrc(URL.createObjectURL(data));   // revoke it on unmount
+> ```
+> Returns `410` if the row exists but its bytes are gone.
+
+#### `DELETE /uploads/{id}` → `204` 🔒
+Removes the file and its stored bytes. Messages that already used it keep their
+text record of the attachment.
+
+#### Storage and safety notes
+
+- Blobs live on a server volume by default (`STORAGE_BACKEND=local`); switching
+  to `s3` is a config change only. **S3 is not usable in production today** —
+  the box has no AWS credentials.
+- Uploaded content is **untrusted**. Extracted text is sanitized at upload time
+  and fenced inside a `<user_attachments>` block in the prompt, so a document
+  containing "ignore your instructions" is treated as data, not as a command.
+  `tests/security/test_upload_prompt_injection.py` enforces this.
+- Every route is owner-scoped; attachments are never shared between accounts.
 
 ---
 

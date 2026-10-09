@@ -21,6 +21,12 @@ os.environ.setdefault(
 # Isolate ephemeral state (rate-limit counters, denylist) in a dedicated Redis DB
 # index. A container run can override this via -e REDIS_URL=redis://redis:6379/1.
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
+# Keep uploaded test files out of the real upload volume.
+import tempfile  # noqa: E402
+
+os.environ.setdefault(
+    "UPLOAD_DIR", tempfile.mkdtemp(prefix="sg-test-uploads-")
+)
 
 import re  # noqa: E402
 import uuid  # noqa: E402

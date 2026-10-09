@@ -5,6 +5,7 @@ full schema.
 """
 from app.models.afro import AgentPersona, Simulation, SimulationTurn
 from app.models.ask import HistoryDocument, HistoryChunk
+from app.models.attachment import Attachment, AttachmentKind, ExtractionStatus
 from app.models.chat_session import ChatMessage, ChatSession, ToolType
 from app.models.examflow import ExamQuestion, ExamSession, ExamSessionQuestion
 from app.models.factorizer import FactoryPlan
@@ -14,6 +15,9 @@ from app.models.user import User
 
 __all__ = [
     "User",
+    "Attachment",
+    "AttachmentKind",
+    "ExtractionStatus",
     "ToolType",
     "ChatSession",
     "ChatMessage",

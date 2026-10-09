@@ -23,6 +23,9 @@ class AskRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     session_id: uuid.UUID | None = None
     learning_mode: LearningMode = LearningMode.normal
+    # Ids from POST /api/v1/uploads. Document text is added to the prompt and
+    # images are sent to the model directly.
+    attachment_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AskSource(BaseModel):
@@ -34,12 +37,22 @@ class AskSource(BaseModel):
     category: str
 
 
+class AskAttachment(BaseModel):
+    """An attachment echoed back on the turn that used it."""
+
+    id: uuid.UUID
+    filename: str
+    kind: str
+    extraction_status: str
+
+
 class AskResponse(BaseModel):
     session_id: uuid.UUID
     message_id: uuid.UUID
     answer: str
     learning_mode: LearningMode
     sources: list[AskSource]
+    attachments: list[AskAttachment] = Field(default_factory=list)
 
 
 class AskSessionListResponse(BaseModel):

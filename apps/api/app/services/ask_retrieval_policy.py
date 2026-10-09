@@ -12,8 +12,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Reserved isolation tags emitted only by ask_context_template.md.
-_RESERVED_TAG_RE = re.compile(r"</?\s*retrieved_sources\s*>", re.IGNORECASE)
+# Reserved isolation tags, emitted only by the prompt templates themselves.
+# Every tag that fences untrusted content must be listed here, or that content
+# could close its own fence and escape into the instruction space.
+_RESERVED_TAG_RE = re.compile(
+    r"</?\s*(retrieved_sources|user_attachments)\s*>", re.IGNORECASE
+)
 # Common LLM chat-scaffold forgeries that have no business in a student
 # question or a history document; defanged rather than deleted so the text
 # remains readable evidence.

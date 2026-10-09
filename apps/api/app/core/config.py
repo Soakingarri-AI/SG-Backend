@@ -95,6 +95,19 @@ class Settings(BaseSettings):
     ASK_HISTORY_MESSAGES: int = 12  # last N messages replayed as conversation memory
     ASK_MAX_PROMPT_TOKENS: int = 1200  # ~4 chars/token heuristic over the 4000-char cap
 
+    # --- Chat file uploads ---
+    # S3 is the eventual home, but the production box has no AWS credentials,
+    # so the default backend writes to a mounted volume. Flipping this to "s3"
+    # is the only change needed once credentials exist.
+    STORAGE_BACKEND: Literal["local", "s3"] = "local"
+    UPLOAD_DIR: str = "/var/lib/soakingarri/uploads"
+    UPLOAD_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MB per file
+    UPLOAD_MAX_PER_MESSAGE: int = 5
+    # Extracted document text is injected into the prompt, so it is capped to
+    # keep one large PDF from crowding out the conversation or the context.
+    UPLOAD_EXTRACT_MAX_CHARS: int = 20_000
+    UPLOAD_USER_QUOTA_BYTES: int = 200 * 1024 * 1024  # 200 MB per account
+
     # --- AWS ---
     AWS_REGION: str = "us-east-1"
     BEDROCK_REGION: str = "us-east-1"

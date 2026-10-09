@@ -13,6 +13,8 @@ One entry point, ``answer()``, runs the full turn:
 """
 from __future__ import annotations
 
+import base64
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -21,12 +23,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.attachment import Attachment, AttachmentKind
 from app.models.chat_session import ChatMessage, ChatSession, MessageRole, ToolType
 from app.prompts import load_prompt
-from app.schemas.ask import AskRequest, AskResponse, AskSource, LearningMode
+from app.schemas.ask import (
+    AskAttachment,
+    AskRequest,
+    AskResponse,
+    AskSource,
+    LearningMode,
+)
+from app.services import attachment_service
 from app.services.ai_service import ai_service
 from app.services.ask_retrieval_policy import PolicyViolation, validate_prompt
 from app.services.rag_service import RetrievedChunk, rag_service
+from app.services.storage_service import StorageError, storage
+
+logger = logging.getLogger(__name__)
 
 _MODE_STYLE: dict[LearningMode, str] = {
     LearningMode.beginner: (
@@ -55,13 +68,31 @@ def build_system_prompt(mode: LearningMode) -> str:
     )
 
 
-def build_user_message(question: str, context: str) -> str:
-    """Wrap the (already sanitized) question and context in the isolation template."""
+def build_user_message(question: str, context: str, attachments: str = "") -> str:
+    """Wrap the (already sanitized) question, context and files for the model.
+
+    Attachment text gets its own fenced block ahead of the corpus context, so
+    the two kinds of untrusted content stay distinguishable to the model and
+    neither can be mistaken for an instruction.
+    """
     if not context:
         context = "(no sources retrieved for this question)"
-    return load_prompt("ask_context_template").format(
+    body = load_prompt("ask_context_template").format(
         context=context, question=question
     )
+    if attachments:
+        prefix = load_prompt("ask_attachments_template").format(
+            attachments=attachments
+        )
+        return f"{prefix}\n\n{body}"
+    return body
+
+
+def build_message_content(text: str, images: list[dict]) -> str | list[dict]:
+    """Plain text, or multimodal parts when the turn carries images."""
+    if not images:
+        return text
+    return [{"type": "text", "text": text}, *images]
 
 
 class AskService:
@@ -80,6 +111,15 @@ class AskService:
         )
         history = await self._load_history(db, session.id)
 
+        attachments = await attachment_service.resolve_for_message(
+            db,
+            attachment_ids=payload.attachment_ids,
+            user_id=user_id,
+            session_id=session.id,
+        )
+        attachment_text = attachment_service.describe_for_prompt(attachments)
+        images = self._image_parts(attachments)
+
         chunks = await rag_service.retrieve_context(prompt, db=db)
         context = rag_service.format_context(chunks)
         sources = [
@@ -92,18 +132,38 @@ class AskService:
             for c in chunks
         ]
 
+        turn_text = build_user_message(prompt, context, attachment_text)
         result = await ai_service.complete(
             system=build_system_prompt(payload.learning_mode),
-            messages=[*history, {"role": "user", "content": build_user_message(prompt, context)}],
+            messages=[
+                *history,
+                {
+                    "role": "user",
+                    "content": build_message_content(turn_text, images),
+                },
+            ],
         )
 
+        attachment_refs = [
+            {
+                "id": str(a.id),
+                "filename": a.filename,
+                "kind": a.kind.value,
+                "content_type": a.content_type,
+                "extraction_status": a.extraction_status.value,
+            }
+            for a in attachments
+        ]
         db.add(
             ChatMessage(
                 session_id=session.id,
                 user_id=user_id,
                 role=MessageRole.user,
                 content=prompt,
-                meta={"learning_mode": payload.learning_mode.value},
+                meta={
+                    "learning_mode": payload.learning_mode.value,
+                    "attachments": attachment_refs,
+                },
             )
         )
         assistant_msg = ChatMessage(
@@ -133,7 +193,40 @@ class AskService:
             answer=result.text,
             learning_mode=payload.learning_mode,
             sources=sources,
+            attachments=[
+                AskAttachment(
+                    id=a.id,
+                    filename=a.filename,
+                    kind=a.kind.value,
+                    extraction_status=a.extraction_status.value,
+                )
+                for a in attachments
+            ],
         )
+
+    @staticmethod
+    def _image_parts(attachments: list[Attachment]) -> list[dict]:
+        """Load image attachments as provider-neutral base64 parts."""
+        parts: list[dict] = []
+        for attachment in attachments:
+            if attachment.kind is not AttachmentKind.image:
+                continue
+            try:
+                data = storage.load(attachment.storage_key)
+            except StorageError:
+                logger.warning(
+                    "Image %s is missing from storage; skipping it for this turn",
+                    attachment.id,
+                )
+                continue
+            parts.append(
+                {
+                    "type": "image",
+                    "media_type": attachment.content_type,
+                    "data": base64.b64encode(data).decode(),
+                }
+            )
+        return parts
 
     # ------------------------------------------------------------------ #
     # Helpers

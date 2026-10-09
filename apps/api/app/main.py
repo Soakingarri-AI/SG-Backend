@@ -24,6 +24,7 @@ from app.routers import (
     factorizer,
     infiniteparts,
     memes,
+    uploads,
 )
 
 def _configure_logging() -> None:
@@ -93,6 +94,7 @@ TAGS_METADATA = [
     {"name": "system", "description": "Health checks and service metadata."},
     {"name": "auth", "description": "Accounts, sessions, token lifecycle, and password reset."},
     {"name": "ask", "description": "Ask SoakinGarri — cited, RAG-grounded African-history answers."},
+    {"name": "uploads", "description": "Chat file attachments: upload, list, download, delete."},
     {"name": "examflow", "description": "Generate, take, and get AI-graded practice exams."},
     {"name": "afrosimulator", "description": "Asynchronous, culturally-safe multi-agent dialogues."},
     {"name": "memes", "description": "Structured expectation-vs-reality meme generation."},
@@ -135,5 +137,5 @@ async def health() -> dict:
     return {"status": "ok", "service": "soakingarri-api", "env": settings.ENVIRONMENT}
 
 
-for r in (auth, ask, examflow, afro, memes, infiniteparts, factorizer):
+for r in (auth, ask, uploads, examflow, afro, memes, infiniteparts, factorizer):
     app.include_router(r.router, prefix=settings.API_V1_PREFIX)
