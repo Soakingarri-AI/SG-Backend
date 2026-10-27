@@ -37,8 +37,10 @@ Sheet columns
     B  Source
     C  Hyperlink        <- deduplication key
     D  Title of source
-    E  Open source      (TRUE / FALSE)
-    F  Author           "A; B; C" - see author_resolver.py; blank = unknown
+    E  Open source        (TRUE / FALSE)
+    F  Author             "A; B; C" - see author_resolver.py; blank = unknown
+    G  author_is_african  TRUE / FALSE, from author_origin.py; blank = unjudged
+    H  downloaded         FALSE on arrival; a separate script flips it to TRUE
 
 Usage
 -----
@@ -73,12 +75,14 @@ import requests
 from google.oauth2.service_account import Credentials
 from pydantic import BaseModel, Field, field_validator
 
+from author_origin import AfricanAuthorClassifier
 from author_resolver import (
     AuthorResolver,
     clean_name,
     format_authors,
     is_plausible_creator,
 )
+from llm_client import LLMClient
 from source_harvesters import (
     HarvestPlanner,
     HarvestRecord,
@@ -123,6 +127,8 @@ HEADER_ROW = [
     "Title of source",
     "Open source",
     "Author",
+    "author_is_african",
+    "downloaded",
 ]
 
 # Politeness / anti-blocking knobs. Tune these before you tune anything else.
@@ -900,6 +906,12 @@ class Document(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     open_source: bool
     authors: str = Field(default="", max_length=1000)  # "" = unknown
+    #: Column G. "TRUE"/"FALSE" from author_origin.py, "" when not judged -
+    #: no author to judge, or the model was not confident enough to say.
+    author_is_african: str = Field(default="", max_length=5)
+    #: Column H. Owned by the separate download script; the collector only
+    #: writes the initial FALSE so that script has a flag to flip.
+    downloaded: bool = False
 
     @field_validator("subject", "source", "title", mode="before")
     @classmethod
@@ -921,7 +933,7 @@ class Document(BaseModel):
         return re.sub(r"\s+", " ", str(value or "")).strip()
 
     def to_row(self) -> list[str]:
-        """Sheet row in column order A..F."""
+        """Sheet row in column order A..H."""
         return [
             self.subject,
             self.source,
@@ -929,6 +941,8 @@ class Document(BaseModel):
             self.title,
             "TRUE" if self.open_source else "FALSE",
             self.authors,
+            self.author_is_african,
+            "TRUE" if self.downloaded else "FALSE",
         ]
 
 
@@ -1895,6 +1909,7 @@ class Collector:
         max_queries: int | None = None,
         authors: AuthorResolver | None = None,
         harvester: HarvestPlanner | None = None,
+        origin: AfricanAuthorClassifier | None = None,
     ) -> None:
         self.sheets = sheets
         self.scraper = scraper
@@ -1910,6 +1925,8 @@ class Collector:
         self.authors = authors
         # None disables repository harvesting (--no-harvest).
         self.harvester = harvester
+        # None disables the column G judgement (--no-origin, or no LLM backend).
+        self.origin = origin
 
     def _evaluate(self, concept: str, item: dict[str, str]) -> Document | None:
         """
@@ -1930,7 +1947,22 @@ class Collector:
         if found:
             document.authors = found.text
             LOGGER.debug("Authors via %s: %s", found.method, found.text)
+        self._judge_origin(document)
         return document
+
+    def _judge_origin(self, document: Document) -> None:
+        """Fill column G for a row that already knows its author."""
+        if self.origin is None or not document.authors:
+            return
+        verdict = self.origin.classify(
+            document.authors, document.title, document.source, document.hyperlink
+        )
+        document.author_is_african = verdict.value
+        if verdict:
+            LOGGER.debug(
+                "Origin of %r: %s (%s)",
+                document.authors[:40], verdict.value, verdict.why,
+            )
 
     def handle_query(self, category: str, concept: str, query: str) -> int:
         """
@@ -1991,11 +2023,12 @@ class Collector:
                 self.sheets.queue(document)
                 added += 1
                 LOGGER.info(
-                    "  + %s | %s | open=%s | by=%s",
+                    "  + %s | %s | open=%s | by=%s | african=%s",
                     document.source,
                     document.title[:80],
                     document.open_source,
                     document.authors[:60] or "?",
+                    document.author_is_african or "?",
                 )
 
         self.state.total_found += added
@@ -2043,9 +2076,10 @@ class Collector:
                 self.sheets.queue(document)
                 added += 1
                 LOGGER.info(
-                    "  + [%s] %s | %s | by=%s",
+                    "  + [%s] %s | %s | by=%s | african=%s",
                     record.source, document.source, document.title[:70],
                     document.authors[:50] or "?",
+                    document.author_is_african or "?",
                 )
 
         self.state.total_found += added
@@ -2092,7 +2126,7 @@ class Collector:
             authors = found.text
 
         try:
-            return Document(
+            document = Document(
                 subject=record.concept,
                 source=registrable_domain(url),
                 hyperlink=url,
@@ -2103,6 +2137,8 @@ class Collector:
         except Exception as exc:
             LOGGER.debug("Harvest: discarding %s - %s", url, exc)
             return None
+        self._judge_origin(document)
+        return document
 
     def run_cycle(self) -> int:
         """One complete pass over every category. Returns rows added."""
@@ -2295,6 +2331,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "cycle is ~160 queries and takes roughly half an hour.",
     )
     parser.add_argument(
+        "--no-origin",
+        action="store_true",
+        help="Do not judge author origin; column G (author_is_african) stays "
+        "blank. Needs an LLM backend when enabled (see llm_client.py).",
+    )
+    parser.add_argument(
         "--no-harvest",
         action="store_true",
         help="Do not harvest repository APIs; search engines only.",
@@ -2313,8 +2355,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-authors",
         action="store_true",
-        help="Skip author lookup (column F stays blank). Author lookup uses "
-        "OPENAI_API_KEY, when set, for PDFs no metadata source can attribute.",
+        help="Skip author lookup (column F stays blank). Author lookup asks the "
+        "LLM (DeepSeek on Bedrock by default) about PDFs no metadata source can "
+        "attribute.",
     )
     parser.add_argument(
         "--dry-run",
@@ -2383,11 +2426,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     scraper = SearchScraper(results_per_query=args.results, stop=stop)
     processor = URLProcessor()
     state = RunState.load(Path(args.state_file))
-    authors = None if args.no_authors else AuthorResolver()
+    llm = LLMClient()
+    LOGGER.info("LLM: %s", llm.describe())
+    authors = None if args.no_authors else AuthorResolver(llm=llm)
     if authors is not None:
         LOGGER.info(
             "Author lookup enabled (LLM fallback %s)", "on" if authors.use_llm else "off"
         )
+
+    origin = None
+    if not args.no_origin:
+        origin = AfricanAuthorClassifier(llm=llm)
+        if not origin.enabled:
+            LOGGER.warning(
+                "author_is_african needs an LLM backend (AWS credentials for "
+                "Bedrock, or OPENAI_API_KEY); column G will stay blank"
+            )
+            origin = None
+        else:
+            LOGGER.info(
+                "author_is_african enabled (%s); blank means the model was unsure",
+                llm.describe(),
+            )
 
     harvester = None
     if not args.no_harvest:
@@ -2415,6 +2475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_queries=args.max_queries,
         authors=authors,
         harvester=harvester,
+        origin=origin,
     )
 
     try:

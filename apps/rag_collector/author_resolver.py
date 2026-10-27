@@ -49,6 +49,8 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 
+from llm_client import LLMClient
+
 try:  # pragma: no cover - environment dependent
     import pypdf
 
@@ -78,8 +80,6 @@ TITLE_MATCH_MIN = 0.90          # similarity needed to trust a title search
 # Kush", "General History of Africa") matched *different* books in testing.
 TITLE_MIN_WORDS = 4
 TITLE_MIN_WORDS_UNCORROBORATED = 7
-
-OPENAI_MODEL = os.getenv("AUTHOR_LLM_MODEL", "gpt-4o-mini")
 
 # Values repositories and word processors put in "author" fields that are not
 # authors. Compared after lowercasing and stripping punctuation.
@@ -304,12 +304,12 @@ class AuthorResolver:
         self,
         session: requests.Session | None = None,
         use_llm: bool | None = None,
-        openai_api_key: str | None = None,
+        llm: LLMClient | None = None,
         crossref_mailto: str | None = None,
     ) -> None:
         self.session = session or requests.Session()
-        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
-        self.use_llm = bool(self.openai_api_key) if use_llm is None else use_llm
+        self.llm = llm or LLMClient(session=self.session)
+        self.use_llm = self.llm.enabled if use_llm is None else (use_llm and self.llm.enabled)
         # Crossref routes requests carrying a contact address to its faster
         # "polite" pool. Opt-in via env so no address is sent by default.
         mailto = crossref_mailto or os.getenv("CROSSREF_MAILTO", "")
@@ -667,20 +667,7 @@ class AuthorResolver:
             f"Title (may be approximate): {title}\n\nDocument start:\n{excerpt}"
         )
         try:
-            response = self.session.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self.openai_api_key}"},
-                json={
-                    "model": OPENAI_MODEL,
-                    "temperature": 0,
-                    "response_format": {"type": "json_object"},
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=(10, 60),
-            )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            proposed = json.loads(content).get("authors") or []
+            proposed = self.llm.json_chat(prompt, timeout=60).get("authors") or []
         except Exception as exc:
             LOGGER.debug("LLM author extraction failed: %s", exc)
             return AuthorResult()

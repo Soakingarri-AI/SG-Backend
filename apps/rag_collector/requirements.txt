@@ -22,3 +22,6 @@ pydantic==2.8.2
 # Author lookup (author_resolver.py): reads the byline, DOI and metadata of
 # PDFs no repository API can attribute. Pure Python, no system deps.
 pypdf==6.19.0
+
+# LLM steps (llm_client.py): DeepSeek on Amazon Bedrock via the Converse API.
+boto3==1.43.114
