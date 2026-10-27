@@ -9,3 +9,9 @@ state.tmp
 # Live credential - never commit
 service_account.json
 *.pem
+
+# Persistent author-origin verdicts and the downloader spool (box-local)
+origin_cache.json
+origin_cache.json.old
+origin_cache.tmp
+tmp/

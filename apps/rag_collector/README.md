@@ -17,7 +17,12 @@ brings the authors with it.
 | `dork_sheet_collector.py` | The collector (SheetsManager, SearchScraper, URLProcessor, Collector). |
 | `author_resolver.py` | Finds a document's author(s) for column F. |
 | `source_harvesters.py` | Repository harvesters (OpenAlex, archive.org, Zenodo, DOAJ, HAL, OAI-PMH, …). |
+| `author_origin.py` | Judges `author_is_african` for column G. |
+| `backfill_origin.py` | One-off: fills blank column G cells on existing rows. |
+| `llm_client.py` | Shared JSON-chat helper: DeepSeek on Bedrock, OpenAI fallback. |
 | `backfill_authors.py` | One-off: fills blank column F cells on existing rows. |
+| `pdf_downloader.py` | Copies African-author PDFs (G = TRUE) into S3; sets H and I. |
+| `install_downloader.sh` | Installs the hourly `soakingarri-pdf-downloader` systemd timer. |
 | `requirements.txt` | Pinned dependencies. |
 | `setup_ec2.sh` | Ubuntu provisioning + `soakingarri-scraper.service` systemd unit. |
 | `service_account.json` | Google credential (gitignored, local only). Found beside the script. |
@@ -36,6 +41,9 @@ to the first tab if that name is missing).
 | D | Title of source | `citation_title` / `og:title` / `<title>` / search title / filename. |
 | E | Open source | `TRUE` / `FALSE`. |
 | F | Author | `A; B; C` (7+ names collapse to `...; et al.`). Blank = unknown. |
+| G | author_is_african | `TRUE` / `FALSE` from `author_origin.py`. Blank = not judged. |
+| H | downloaded | `FALSE` on arrival; `pdf_downloader.py` sets `TRUE` once the PDF is in S3. |
+| I | download_note | `s3://…` on success, `failed: <reason>` or `retry: <reason>`. |
 
 ## One-time Google setup
 
@@ -74,7 +82,9 @@ KEY=../../.local/keys/sg-key.pem
 HOST=ec2-user@<EC2_IP>
 ssh -i $KEY $HOST 'mkdir -p ~/rag_collector'
 scp -i $KEY dork_sheet_collector.py author_resolver.py backfill_authors.py \
-    source_harvesters.py requirements.txt setup_ec2.sh README.md $HOST:~/rag_collector/
+    source_harvesters.py author_origin.py backfill_origin.py llm_client.py \
+    pdf_downloader.py install_downloader.sh \
+    requirements.txt setup_ec2.sh README.md $HOST:~/rag_collector/
 scp -i $KEY service_account.json $HOST:~/rag_collector/
 ssh -i $KEY $HOST 'cd ~/rag_collector && chmod +x setup_ec2.sh && ./setup_ec2.sh'
 ```
@@ -119,9 +129,9 @@ Currently deployed to `ec2-user@3.80.73.164` (Amazon Linux 2023, t3.micro).
 4. **PDF author metadata**, only if that full name is printed in the document.
 5. **Title search** (Crossref, then OpenAlex): near-exact title match, and the
    author's full name must appear in the document text.
-6. **LLM** (gpt-4o-mini, only when `OPENAI_API_KEY` is set) reads the PDF's first
-   pages or an archive.org item's OCR text and returns the byline. Names not
-   printed in that text are discarded.
+6. **LLM** (DeepSeek V3.2 on Bedrock; see [LLM backend](#llm-backend)) reads the
+   PDF's first pages or an archive.org item's OCR text and returns the byline.
+   Names not printed in that text are discarded.
 
 Measured on 200 random rows of the live sheet: authors found for **68%**. Most
 of the remainder genuinely have no author (TV captures, municipal reports,
@@ -129,7 +139,7 @@ course pages). Every heuristic step is corroborated against the document text,
 because a wrong author is worse than a blank - see the module docstring for the
 failures that shaped each check.
 
-- Disable with `--no-authors`. Without `OPENAI_API_KEY`, steps 1-5 still run.
+- Disable with `--no-authors`. With no LLM backend, steps 1-5 still run.
 - `AUTHOR_PDF_MAX_MB` caps PDF downloads (default 20; the t3.micro uses 8).
 - `CROSSREF_MAILTO` (optional) joins Crossref's faster "polite" pool.
 
@@ -141,8 +151,115 @@ only writes blank F cells and re-checks each row's URL before writing):
 .venv/bin/python backfill_authors.py                        # fill all blanks
 ```
 
-On the EC2 box the key lives in `~/rag_collector/collector.env` (mode 600),
-loaded by the systemd drop-in `soakingarri-scraper.service.d/authors.conf`.
+On the EC2 box the OpenAI key (the fallback) lives in
+`~/rag_collector/collector.env` (mode 600), loaded by the systemd drop-in
+`soakingarri-scraper.service.d/authors.conf`.
+
+## LLM backend
+
+Both model calls (the byline above, origin below) go through `llm_client.py`.
+
+| Env | Default | |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `bedrock` | `bedrock` or `openai` |
+| `LLM_MODEL` | `deepseek.v3.2` / `gpt-4o-mini` | per provider |
+| `BEDROCK_REGION` | `us-east-1` | |
+
+Bedrock uses the standard AWS credential chain. **Locally, set
+`AWS_PROFILE=soakingarri`**: this machine's `default` profile is a different
+AWS account. On the box, credentials come from the EC2 instance role.
+
+If Bedrock is selected but no AWS credentials are found, the client falls back
+to OpenAI when `OPENAI_API_KEY` is set, and logs a warning saying so. The box's
+instance role `soakingarri-rag-collector` grants DeepSeek on Bedrock, so it runs
+on DeepSeek; the OpenAI key stays as the fallback. The startup log line
+`LLM: ...` shows which backend is live.
+
+Measured on DeepSeek V3.2: origin verdicts in about 1-3 s each (Achebe TRUE,
+Davidson FALSE, an unknown "J. Smith" left blank); byline extraction kept the
+two credited authors and dropped a scholar who was only cited.
+
+## PDF downloads (columns H, I)
+
+`pdf_downloader.py` copies the PDF behind every row with `author_is_african` =
+TRUE into **`s3://soakingarri-rag-corpus/pdfs/`**, the raw corpus for the Ask
+RAG index, and records the outcome:
+
+- `H downloaded` becomes `TRUE`, and `I download_note` holds the `s3://` path.
+- `failed: <reason>` (404, login wall, bot check, no PDF on the page) leaves H
+  `FALSE` and is skipped by later runs; `--retry-failed` tries them again.
+- `retry: <reason>` (timeout, 5xx) is retried on the next run.
+
+About half the rows link to a landing page rather than the file. The script
+follows publisher `citation_pdf_url` tags, OJS galley links and archive.org
+items, then plain PDF links. A plain link is only accepted if the row's title
+is printed on the PDF's first pages, because landing pages also link author
+guidelines and policy documents. CAPTCHA and bot-check walls are recorded, not
+bypassed.
+
+Each PDF gets a sidecar `<file>.pdf.metadata.json` (title, author, source URL,
+host, concept, open access) in the shape Amazon Bedrock Knowledge Bases reads,
+so the bucket can be indexed as-is. Keys come from the URL, so a re-run that
+finds the object already in S3 just marks the row.
+
+```bash
+AWS_PROFILE=soakingarri python pdf_downloader.py --dry-run --limit 10   # locally, writes nothing
+python pdf_downloader.py                                                 # every pending row
+```
+
+On the box it runs hourly as the `soakingarri-pdf-downloader` timer
+(`./install_downloader.sh`), with credentials from the instance role
+`soakingarri-rag-collector`. It runs at low priority with a 350 MB memory cap,
+and spools to `./tmp` rather than the RAM-backed `/tmp`.
+
+First measurement (dry run, 30 rows): 22 downloaded, 4 failed (three behind a
+reCAPTCHA wall, one record with no file), 4 temporary errors.
+
+## author_is_african (column G)
+
+`author_origin.py` asks the model ([LLM backend](#llm-backend)) about the
+**first-named** author, with the title and host as context, and writes `TRUE`,
+`FALSE`, or leaves the cell blank. Verdicts are cached per author, so a prolific
+author costs one call however many rows they have. `--no-origin` turns it off;
+with no LLM backend it is skipped and the column stays blank.
+
+**A blank is a real answer.** Origin cannot be read off a name: African authors
+carry Arabic, Portuguese, French, English and Afrikaans names, and names that
+sound African belong to people everywhere. The prompt therefore asks about the
+author as a person and requires "unknown" when that would be guesswork. Measured
+on 14 real authors from the sheet: 5 TRUE, 2 FALSE, 7 unsure - it recognised
+Ndlovu-Gatsheni, Falola, Chirikure and Ngom, correctly rejected Bondarenko, and
+declined names it did not know (Breunig, Lange). Treat the column as a filter
+hint, not a fact about anybody.
+
+Rows with no author are never judged: there is nothing to judge, and blank stays
+distinguishable from "judged, not African".
+
+```bash
+python backfill_origin.py --dry-run --limit 25   # preview
+python backfill_origin.py                        # judge every unjudged row
+python backfill_origin.py --fresh                # forget cached verdicts, ask again
+```
+
+The backfill also runs automatically at the start of every hourly
+`soakingarri-pdf-downloader` run, so rows it marks TRUE are downloaded in the
+same pass. Verdicts persist in `origin_cache.json` on the box, including the
+unsure ones, which the sheet leaves blank exactly like "never asked". Without
+that file the hourly run would re-ask thousands of authors every time. Use
+`--fresh` after changing the prompt or the model.
+
+The model sees the first author, all co-authors, the title, the host and the
+document URL. It deliberately does not see the topic, because subject matter is
+not evidence of origin. DeepSeek V3.2 is more conservative than gpt-4o-mini
+was. On 45 authors gpt-4o-mini had judged, it agreed on 23 of 30 TRUE and
+7 of 15 FALSE, and answered unsure for the rest, never the opposite verdict.
+On the pre-column-G backlog, about 3 in 4 authors come back unsure.
+
+## downloaded (column H)
+
+The collector writes `FALSE` on every new row and never touches it again; the
+separate download script owns the column and flips it to `TRUE`. Backfills here
+only ever write blank cells, so that script's work is never overwritten.
 
 ## Sources (harvesting)
 
