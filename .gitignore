@@ -18,6 +18,7 @@ node_modules/
 .next/
 out/
 .turbo/
+*.tsbuildinfo
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
@@ -38,3 +39,19 @@ Thumbs.db
 
 # SSH keys — never commit
 *.pem
+
+# Service account credentials - never commit
+service_account.json
+*service_account*.json
+
+# OpenVPN client profiles (contain private keys)
+*.ovpn
+
+# Local-only material: SSH keys, VPN profiles, personal notes and data exports.
+# Everything under here stays on this machine — see CLAUDE.md.
+.local/
+
+# RAG collector runtime state (also covered by apps/rag_collector/.gitignore)
+apps/rag_collector/logs/
+apps/rag_collector/state.json
+apps/rag_collector/collector.env

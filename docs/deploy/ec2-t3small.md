@@ -77,10 +77,9 @@ EC2 instance running **Amazon Linux 2023 (AL2023)**.
 ## 2. Prerequisites
 
 - AWS account; the `soakingarri.com` domain (or your own) manageable in **Route 53**.
-- **Amazon Bedrock model access** granted in your region for the model in
-  `AI_MODEL` (`claude-opus-4-8`) and embeddings (`amazon.titan-embed-text-v2:0`) —
-  request under **Bedrock → Model access**. *(Prefer the Anthropic API? Set
-  `AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` and skip the Bedrock IAM perms.)*
+- **Amazon Bedrock access** in your region for the chat model in `AI_MODEL`
+  (`deepseek.v3.2`) and embeddings (`amazon.titan-embed-text-v2:0`). Every
+  model call goes through Bedrock; do not configure the OpenAI provider.
 - An **S3 bucket** for user assets (default `soakingarri-assets`).
 - A machine to build/deploy the frontend from (your laptop or CI) — **not** the
   t3.small.
@@ -90,32 +89,37 @@ EC2 instance running **Amazon Linux 2023 (AL2023)**.
 ## 3. IAM role for Bedrock + S3
 
 Create an IAM **role** (trusted entity: EC2) so the box calls AWS with no static
-keys. Attach this inline policy (scope S3 to your bucket):
+keys. The live one is **`soakingarri-api`** (instance profile of the same name,
+permissions boundary `soakingarri-workload-boundary`), with this inline policy:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "Bedrock",
+      "Sid": "DeepSeekChat",
       "Effect": "Allow",
       "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-      "Resource": "*"
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/deepseek.*",
+        "arn:aws:bedrock:*:431856071890:inference-profile/us.deepseek.*",
+        "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+      ]
     },
     {
-      "Sid": "S3Assets",
+      "Sid": "AskKnowledgeBase",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-      "Resource": [
-        "arn:aws:s3:::soakingarri-assets",
-        "arn:aws:s3:::soakingarri-assets/*"
-      ]
+      "Action": "bedrock:Retrieve",
+      "Resource": "arn:aws:bedrock:us-east-1:431856071890:knowledge-base/R2EDMWMFLK"
     }
   ]
 }
 ```
 
-Name it `soakingarri-ec2-role`; attach at launch (step 4).
+Uploads use the local volume (`STORAGE_BACKEND=local`), so the role has no S3
+access. Switching to `STORAGE_BACKEND=s3` means adding S3 permissions for the
+bucket first. Attach the role at launch (step 4), or later with
+`aws ec2 associate-iam-instance-profile`.
 
 ---
 
@@ -331,6 +335,14 @@ COOKIE_DOMAIN=.soakingarri.com
 CORS_ORIGINS=https://soakingarri.com,https://ask.soakingarri.com,https://examflow.soakingarri.com,https://afrosimulator.soakingarri.com,https://memes.soakingarri.com,https://infiniteparts.soakingarri.com,https://factorizer.soakingarri.com
 
 AI_PROVIDER=bedrock
+AI_MODEL=deepseek.v3.2
+EMBEDDING_PROVIDER=bedrock
+
+# Ask retrieval: the Bedrock Knowledge Base (infra/bedrock_kb/setup_kb.py)
+RAG_ENABLED=true
+RAG_BACKEND=bedrock_kb
+BEDROCK_KB_ID=R2EDMWMFLK
+
 AWS_REGION=us-east-1
 BEDROCK_REGION=us-east-1
 # LEAVE BLANK — the IAM instance role provides credentials.
@@ -504,10 +516,10 @@ The Next.js app is served **separately** from the API. Pick one (all point their
 
 | Option | Best for | Repo guide |
 |--------|----------|------------|
-| **Vercel** | Zero-ops SSR + preview deploys | [`DEPLOY_VERCEL.md`](DEPLOY_VERCEL.md) |
+| **Vercel** | Zero-ops SSR + preview deploys | [`vercel.md`](vercel.md) |
 | **AWS Amplify Hosting** | Staying inside AWS, CI from git | — |
 | **S3 + CloudFront** | Cheapest, static export | — |
-| **GitHub Pages** | Free static demo | [`DEPLOY_GITHUB_PAGES.md`](DEPLOY_GITHUB_PAGES.md) |
+| **GitHub Pages** | Free static demo | [`github-pages.md`](github-pages.md) |
 
 > **Monorepo setting (important):** when you connect the repo to Vercel/Amplify,
 > set the project's **Root Directory** (Vercel) or **App root / monorepo path**
@@ -647,5 +659,5 @@ t3.small** — it will OOM. Instead:
 
 Even so, RAM will be **very** tight (runtime ~1.6–1.8 GB + swap). For a real
 web + API single box, prefer **t3.medium (4 GB)** and follow
-[`DEPLOY_EC2.md`](DEPLOY_EC2.md).
+[`ec2.md`](ec2.md).
 ```

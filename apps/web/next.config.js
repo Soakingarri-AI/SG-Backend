@@ -6,7 +6,7 @@
  *
  * The static-demo mode emits a fully static `out/` folder for GitHub Pages.
  * Middleware, API routes, and header rules do NOT run in that mode — see
- * DEPLOY_GITHUB_PAGES.md for what works and what doesn't.
+ * docs/deploy/github-pages.md for what works and what doesn't.
  */
 const isStaticDemo = process.env.NEXT_PUBLIC_STATIC_DEMO === "true";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";

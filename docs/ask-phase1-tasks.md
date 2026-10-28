@@ -1,6 +1,6 @@
 # Ask SoakinGarri — Phase 1 Backend Implementation Tracker
 
-> **Path mapping note.** The mission spec references `backend/...` and `app/api/v1/...`.
+> **Path mapping note.** (Paths below are relative to `apps/api/`.) The mission spec references `backend/...` and `app/api/v1/...`.
 > In this repo the backend lives at **`apps/api/`** and routers live in
 > **`app/routers/`**, mounted under `/api/v1` by `app/main.py`. All targets below use
 > the real repo paths. Similarly, `tests/backend/` → `apps/api/tests/`, and

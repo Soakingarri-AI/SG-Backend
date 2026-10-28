@@ -1,7 +1,7 @@
 name: Deploy demo to GitHub Pages
 
 # Builds apps/web as a static export and publishes it to GitHub Pages.
-# This is the marketing + product-UI demo (no backend). See DEPLOY_GITHUB_PAGES.md.
+# This is the marketing + product-UI demo (no backend). See docs/deploy/github-pages.md.
 
 on:
   push:

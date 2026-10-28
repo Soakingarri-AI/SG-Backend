@@ -57,7 +57,7 @@ Two options, both keeping this same frontend:
    `NEXT_PUBLIC_API_URL` pointing at it and add the Pages origin to the API's
    `CORS_ORIGINS`. Note browsers block a Pages **https** page from calling an
    **http** backend, so the backend must be https.
-2. **Deploy the whole app to Vercel** instead (see `DEPLOY_VERCEL.md`), which
+2. **Deploy the whole app to Vercel** instead (see `vercel.md`), which
    runs the middleware, subdomains, and API routes for real.
 
 ---
