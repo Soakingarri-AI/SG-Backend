@@ -93,6 +93,15 @@ class Settings(BaseSettings):
     # loaded, retrieval is stubbed: RAG_ENABLED=false short-circuits to no
     # sources while keeping the pgvector code path one env flip away.
     RAG_ENABLED: bool = False
+    # Where RAG_ENABLED searches: "bedrock_kb" is the Bedrock Knowledge Base
+    # over the S3 PDF corpus (infra/bedrock_kb/setup_kb.py builds it);
+    # "pgvector" is the history_chunks table filled by scripts.ingest_history.
+    RAG_BACKEND: Literal["pgvector", "bedrock_kb"] = "pgvector"
+    BEDROCK_KB_ID: str | None = None
+    # Knowledge Base hits scoring below this are dropped, so an off-topic
+    # question gets no citations rather than the least-bad papers. Measured on
+    # the full corpus: history questions 0.81-0.94, off-topic ones <= 0.68.
+    RAG_MIN_SCORE: float = 0.70
     # In development only: return a canned mock chunk so the full context
     # pipeline (templating, citations, UI panels) can be exercised end to end.
     RAG_DEV_MOCK: bool = False
@@ -127,7 +136,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def _forbid_default_secret_outside_dev(self) -> "Settings":
+    def _forbid_default_secret_outside_dev(self) -> Settings:
         """Refuse to boot staging/production with the placeholder JWT secret —
         a known signing key lets anyone forge tokens for any user."""
         if self.ENVIRONMENT != "development" and self.JWT_SECRET_KEY == "change-me":
@@ -135,6 +144,13 @@ class Settings(BaseSettings):
                 "JWT_SECRET_KEY must be set to a strong random value when "
                 f"ENVIRONMENT={self.ENVIRONMENT!r}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_kb_id(self) -> Settings:
+        """A missing KB id would silently answer every question unsourced."""
+        if self.RAG_ENABLED and self.RAG_BACKEND == "bedrock_kb" and not self.BEDROCK_KB_ID:
+            raise ValueError("RAG_BACKEND=bedrock_kb needs BEDROCK_KB_ID")
         return self
 
     @property
