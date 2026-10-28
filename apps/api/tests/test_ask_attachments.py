@@ -47,6 +47,8 @@ class AICapture:
 def mock_ai(monkeypatch: pytest.MonkeyPatch) -> AICapture:
     capture = AICapture()
     monkeypatch.setattr(ai_service, "complete", capture.complete)
+    # Pinned so the vision tests don't depend on which AI_MODEL .env selects.
+    monkeypatch.setattr(ai_service, "supports_images", True)
     return capture
 
 
@@ -165,6 +167,32 @@ async def test_image_turn_tells_the_tutor_a_picture_is_attached(
     assert _OPEN_RE.search(sent), "image-only turns still need the attachment block"
     assert "diagram.png" in sent
     assert "image" in sent.lower()
+
+
+async def test_text_only_model_gets_no_picture_and_is_told_so(
+    client: AsyncClient,
+    auth_headers,
+    mock_ai: AICapture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek can't see images: the image part is withheld, and the manifest
+    must not claim a picture is "included below" or the model invents one."""
+    monkeypatch.setattr(ai_service, "supports_images", False)
+    headers = await auth_headers()
+    attachment_id = await _upload(client, headers, png_bytes(), "diagram.png")
+
+    resp = await client.post(
+        ASK,
+        headers=headers,
+        json={"prompt": "What is in this?", "attachment_ids": [attachment_id]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert isinstance(mock_ai.last_content, str)  # no multimodal parts at all
+    sent = mock_ai.last_text
+    assert "diagram.png" in sent
+    assert "cannot see images" in sent
+    assert "included directly below" not in sent
 
 
 async def test_provider_translation_for_images(

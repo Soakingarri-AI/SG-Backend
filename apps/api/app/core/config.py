@@ -72,9 +72,14 @@ class Settings(BaseSettings):
 
     # --- AI ---
     AI_PROVIDER: Literal["bedrock", "anthropic", "openai"] = "bedrock"
-    # Model id must match the provider: a Bedrock/Anthropic id for those
-    # providers, an OpenAI id (e.g. "gpt-4o-mini") when AI_PROVIDER=openai.
-    AI_MODEL: str = "claude-opus-4-8"
+    # Model id must match the provider. Bedrock: a model or inference-profile
+    # id, e.g. "deepseek.v3.2", "us.deepseek.r1-v1:0" (reasoning; slower, and
+    # needs a larger max_tokens) or "us.anthropic.claude-sonnet-4-5-20250929-v1:0".
+    # OpenAI: e.g. "gpt-4o-mini". DeepSeek models are text-only.
+    AI_MODEL: str = "deepseek.v3.2"
+    # Embeddings are pinned independently of the chat provider: the RAG index
+    # is only searchable with the model that built it.
+    EMBEDDING_PROVIDER: Literal["bedrock", "openai"] = "bedrock"
     AI_EMBEDDING_MODEL: str = "amazon.titan-embed-text-v2:0"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     AI_MAX_RETRIES: int = 4

@@ -162,13 +162,19 @@ async def delete(db: AsyncSession, attachment: Attachment) -> None:
     await db.delete(attachment)
 
 
-def describe_for_prompt(attachments: list[Attachment]) -> str:
+def describe_for_prompt(
+    attachments: list[Attachment], *, images_visible: bool = True
+) -> str:
     """Render the attachment manifest that goes into the prompt.
 
     Document text is included inline. Images carry no text, but they are still
     listed: the image itself rides along as a separate vision part, and without
     a line naming it the tutor has no idea it was given a picture and falls
     back on "I can't determine that" rather than looking.
+
+    ``images_visible=False`` is for text-only models, which receive no picture.
+    The line then says so, because a model told an image is "included below"
+    when it is not will describe one it never saw.
 
     Text is already sanitised at extraction time, and the caller wraps this
     whole block in the untrusted-content template.
@@ -178,11 +184,20 @@ def describe_for_prompt(attachments: list[Attachment]) -> str:
         label = f"[Attachment {index}: {attachment.filename}]"
 
         if attachment.kind is AttachmentKind.image:
-            blocks.append(
-                f"{label}\n(This is an image attached to this message. It is "
-                "included directly below as a picture — read it and answer from "
-                "what you can see in it.)"
-            )
+            if images_visible:
+                note = (
+                    "(This is an image attached to this message. It is "
+                    "included directly below as a picture — read it and answer from "
+                    "what you can see in it.)"
+                )
+            else:
+                note = (
+                    "(This is an image attached to this message, but you cannot "
+                    "see images. Do not guess what it shows: tell the student you "
+                    "can't view pictures yet and ask them to type out the text or "
+                    "describe it.)"
+                )
+            blocks.append(f"{label}\n{note}")
             continue
 
         if attachment.extraction_status in (

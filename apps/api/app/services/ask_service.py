@@ -117,8 +117,10 @@ class AskService:
             user_id=user_id,
             session_id=session.id,
         )
-        attachment_text = attachment_service.describe_for_prompt(attachments)
-        images = self._image_parts(attachments)
+        attachment_text = attachment_service.describe_for_prompt(
+            attachments, images_visible=ai_service.supports_images
+        )
+        images = self._image_parts(attachments) if ai_service.supports_images else []
 
         chunks = await rag_service.retrieve_context(prompt, db=db)
         context = rag_service.format_context(chunks)

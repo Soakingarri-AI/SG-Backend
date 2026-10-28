@@ -1,0 +1,14 @@
+# =============================================================================
+# Local development additions, loaded automatically by a bare `docker compose`.
+#
+# Production is unaffected: the EC2 box always runs with explicit
+# `-f docker-compose.yml -f docker-compose.prod.yml`, and compose only reads
+# this file when no -f is given. In AWS the API gets credentials from the EC2
+# instance role instead.
+# =============================================================================
+services:
+  api:
+    volumes:
+      # Your AWS CLI profiles, read-only, so boto3 can reach Bedrock using the
+      # profile named by AWS_PROFILE in .env (e.g. soakingarri).
+      - ~/.aws:/root/.aws:ro

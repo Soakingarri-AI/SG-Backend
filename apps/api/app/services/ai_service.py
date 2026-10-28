@@ -10,10 +10,21 @@ Single entry point for every subdomain's LLM needs:
 Providers: Amazon Bedrock, the Anthropic API, or the OpenAI API — selected by
 ``AI_PROVIDER``. The public interface is provider-agnostic; provider SDKs are
 imported lazily so only the configured one needs to be installed.
+
+Bedrock goes through the Converse API, which speaks one request shape for every
+model it hosts, so switching between DeepSeek and Claude is an ``AI_MODEL``
+change rather than a code change.
+
+Embeddings are pinned separately by ``EMBEDDING_PROVIDER``: every vector in the
+RAG index must come from the same model as the query vectors, so changing the
+chat provider must never silently change the embedding model.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -27,7 +38,14 @@ from tenacity import (
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
+
+# Model families that accept text only. Image parts sent to them are dropped
+# (Bedrock would otherwise reject the whole request), and callers check
+# ``ai_service.supports_images`` so the prompt never claims a picture is there.
+_TEXT_ONLY_MODEL_MARKERS = ("deepseek",)
 
 
 class AIServiceError(Exception):
@@ -51,31 +69,43 @@ class AIResult:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+def _build_client(provider: str) -> Any:
+    if provider == "bedrock":
+        import boto3
+        from botocore.config import Config
+
+        return boto3.client(
+            "bedrock-runtime",
+            region_name=settings.BEDROCK_REGION,
+            config=Config(
+                connect_timeout=10,
+                read_timeout=settings.AI_TIMEOUT_SECONDS,
+                # Tenacity owns retries; botocore's own would multiply them.
+                retries={"mode": "standard", "total_max_attempts": 1},
+            ),
+        )
+    if provider == "openai":
+        from openai import OpenAI
+
+        return OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            timeout=settings.AI_TIMEOUT_SECONDS,
+        )
+    # anthropic
+    from anthropic import Anthropic
+
+    return Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+
 class AIService:
     def __init__(self) -> None:
         self.provider = settings.AI_PROVIDER
         self.model = settings.AI_MODEL
-        self._client = self._build_client()
-
-    # ------------------------------------------------------------------ #
-    # Client wiring
-    # ------------------------------------------------------------------ #
-    def _build_client(self) -> Any:
-        if self.provider == "bedrock":
-            import boto3
-
-            return boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
-        if self.provider == "openai":
-            from openai import OpenAI
-
-            return OpenAI(
-                api_key=settings.OPENAI_API_KEY,
-                timeout=settings.AI_TIMEOUT_SECONDS,
-            )
-        # anthropic
-        from anthropic import Anthropic
-
-        return Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.supports_images = not any(
+            marker in self.model.lower() for marker in _TEXT_ONLY_MODEL_MARKERS
+        )
+        self._client = _build_client(self.provider)
+        self._embed_client: Any = None
 
     # ------------------------------------------------------------------ #
     # Core completion
@@ -95,12 +125,16 @@ class AIService:
         temperature: float = 0.7,
     ) -> AIResult:
         """Run a chat completion and return text + token usage."""
+        if self.provider == "bedrock":
+            call = self._complete_bedrock
+        elif self.provider == "openai":
+            call = self._complete_openai
+        else:
+            call = self._complete_anthropic
         try:
-            if self.provider == "bedrock":
-                return self._complete_bedrock(system, messages, max_tokens, temperature)
-            if self.provider == "openai":
-                return self._complete_openai(system, messages, max_tokens, temperature)
-            return self._complete_anthropic(system, messages, max_tokens, temperature)
+            # The provider SDKs are synchronous; a worker thread keeps a slow
+            # completion from stalling every other request on the event loop.
+            return await asyncio.to_thread(call, system, messages, max_tokens, temperature)
         except AIServiceError:
             raise
         except Exception as exc:  # network, throttling, etc. -> retryable
@@ -142,26 +176,28 @@ class AIService:
     def _complete_bedrock(
         self, system: str, messages: list[dict], max_tokens: int, temp: float
     ) -> AIResult:
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "system": system,
-            "max_tokens": max_tokens,
-            "temperature": temp,
-            # Bedrock speaks the Anthropic content-block format.
-            "messages": _to_anthropic_messages(messages),
+        request: dict[str, Any] = {
+            "modelId": self.model,
+            "messages": _to_converse_messages(messages, allow_images=self.supports_images),
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": temp},
         }
-        resp = self._client.invoke_model(
-            modelId=self.model, body=json.dumps(body)
-        )
-        payload = json.loads(resp["body"].read())
-        text = "".join(
-            b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text"
-        )
-        usage_block = payload.get("usage", {})
-        usage = Usage(
-            usage_block.get("input_tokens", 0), usage_block.get("output_tokens", 0)
-        )
-        return AIResult(text=text, usage=usage, raw=payload)
+        if system:
+            request["system"] = [{"text": system}]
+        resp = self._client.converse(**request)
+
+        # Reasoning models (DeepSeek R1) return a ``reasoningContent`` block next
+        # to the answer; only the ``text`` blocks are the answer itself.
+        blocks = resp.get("output", {}).get("message", {}).get("content", [])
+        text = "".join(b["text"] for b in blocks if "text" in b).strip()
+        if resp.get("stopReason") == "max_tokens":
+            logger.warning(
+                "Bedrock %s hit max_tokens=%d; the answer may be cut short",
+                self.model,
+                max_tokens,
+            )
+        usage_block = resp.get("usage", {})
+        usage = Usage(usage_block.get("inputTokens", 0), usage_block.get("outputTokens", 0))
+        return AIResult(text=text, usage=usage, raw=resp)
 
     # ------------------------------------------------------------------ #
     # Structured JSON output with schema validation
@@ -210,29 +246,47 @@ class AIService:
     # Embeddings (RAG)
     # ------------------------------------------------------------------ #
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return one embedding vector per input text."""
-        if self.provider == "bedrock":
-            vectors: list[list[float]] = []
-            for text in texts:
-                resp = self._client.invoke_model(
-                    modelId=settings.AI_EMBEDDING_MODEL,
-                    body=json.dumps({"inputText": text}),
-                )
-                payload = json.loads(resp["body"].read())
-                vectors.append(payload["embedding"])
-            return vectors
-        if self.provider == "openai":
-            # ``dimensions`` shortens text-embedding-3 vectors to match the
-            # pgvector column width configured for the platform.
-            resp = self._client.embeddings.create(
-                model=settings.OPENAI_EMBEDDING_MODEL,
-                input=texts,
-                dimensions=settings.EMBEDDING_DIM,
+        """Return one ``EMBEDDING_DIM``-wide vector per input text."""
+        if settings.EMBEDDING_PROVIDER == "openai":
+            return await asyncio.to_thread(self._embed_openai, texts)
+        return await asyncio.to_thread(self._embed_bedrock, texts)
+
+    def _embedding_client(self) -> Any:
+        if self._embed_client is None:
+            same = settings.EMBEDDING_PROVIDER == self.provider
+            self._embed_client = (
+                self._client if same else _build_client(settings.EMBEDDING_PROVIDER)
             )
-            return [item.embedding for item in resp.data]
-        # Anthropic has no first-party embedding endpoint; production uses Bedrock
-        # Titan. Dev fallback returns a deterministic zero vector for wiring tests.
-        return [[0.0] * settings.EMBEDDING_DIM for _ in texts]
+        return self._embed_client
+
+    def _embed_bedrock(self, texts: list[str]) -> list[list[float]]:
+        client = self._embedding_client()
+        vectors: list[list[float]] = []
+        for text in texts:
+            # Titan v2 takes one text per call. The width is requested
+            # explicitly so it always matches the pgvector column.
+            resp = client.invoke_model(
+                modelId=settings.AI_EMBEDDING_MODEL,
+                body=json.dumps(
+                    {
+                        "inputText": text,
+                        "dimensions": settings.EMBEDDING_DIM,
+                        "normalize": True,
+                    }
+                ),
+            )
+            vectors.append(json.loads(resp["body"].read())["embedding"])
+        return vectors
+
+    def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        # ``dimensions`` shortens text-embedding-3 vectors to match the
+        # pgvector column width configured for the platform.
+        resp = self._embedding_client().embeddings.create(
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            input=texts,
+            dimensions=settings.EMBEDDING_DIM,
+        )
+        return [item.embedding for item in resp.data]
 
 
 # --------------------------------------------------------------------------- #
@@ -287,6 +341,38 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             else:
                 parts.append({"type": "text", "text": part.get("text", "")})
         converted.append({"role": message["role"], "content": parts})
+    return converted
+
+
+def _to_converse_messages(messages: list[dict], *, allow_images: bool) -> list[dict]:
+    """Translate to Bedrock Converse blocks: ``{"text"}`` and ``{"image"}``.
+
+    Converse rejects blank text blocks, and a blank assistant turn in the
+    history (e.g. a reasoning model that spent its whole budget thinking) would
+    otherwise break every later turn of that conversation.
+    """
+    converted: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        blocks: list[dict] = []
+        for part in parts or []:
+            if part.get("type") == "image":
+                if allow_images:
+                    fmt = part["media_type"].split("/")[-1].replace("jpg", "jpeg")
+                    blocks.append(
+                        {
+                            "image": {
+                                "format": fmt,
+                                "source": {"bytes": base64.b64decode(part["data"])},
+                            }
+                        }
+                    )
+            elif (part.get("text") or "").strip():
+                blocks.append({"text": part["text"]})
+        converted.append(
+            {"role": message["role"], "content": blocks or [{"text": "(empty message)"}]}
+        )
     return converted
 
 
