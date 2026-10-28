@@ -93,6 +93,11 @@ NOTE_HEADER = "download_note"
 WRITE_CHUNK = 20
 
 PDF_MAX_BYTES = int(float(os.getenv("DOWNLOAD_PDF_MAX_MB", "150")) * 1024 * 1024)
+# The Ask Knowledge Base indexing this bucket (infra/bedrock_kb/setup_kb.py
+# prints both ids). Unset = do not sync after uploading.
+KB_ID = os.getenv("BEDROCK_KB_ID", "")
+KB_DATA_SOURCE_ID = os.getenv("BEDROCK_KB_DATA_SOURCE_ID", "")
+SIDECAR_MAX_BYTES = 1000         # the Knowledge Base's limit is 1024
 HTML_MAX_BYTES = 3 * 1024 * 1024
 TIMEOUT = (15, 60)               # (connect, read) seconds
 MAX_CANDIDATES = 6               # PDF links tried per landing page
@@ -457,24 +462,22 @@ class PdfDownloader:
             raise Retry(f"S3 check failed: {exc}") from exc
 
     def _upload(self, path: Path, key: str, row: Row) -> None:
-        sidecar = {
-            "metadataAttributes": {
-                "title": row.title,
-                "author": row.author,
-                "source_url": row.url,
-                "host": urlparse(row.url).netloc,
-                "concept": row.concept,
-                "open_access": row.open_access,
-                "author_is_african": True,
-            }
-        }
+        sidecar = sidecar_json({
+            "title": row.title,
+            "author": row.author,
+            "source_url": row.url,
+            "host": urlparse(row.url).netloc,
+            "concept": row.concept,
+            "open_access": row.open_access,
+            "author_is_african": True,
+        })
         try:
             # Sidecar first: an object without its metadata would index badly,
             # while a sidecar without its PDF is simply ignored.
             self.s3.put_object(
                 Bucket=self.bucket,
                 Key=f"{key}.metadata.json",
-                Body=json.dumps(sidecar, ensure_ascii=False).encode(),
+                Body=sidecar,
                 ContentType="application/json",
             )
             self.s3.upload_file(
@@ -523,6 +526,54 @@ def pending_rows(values: list[list[str]], retry_failed: bool) -> list[Row]:
             )
         )
     return rows
+
+
+def sidecar_json(attributes: dict) -> bytes:
+    """The `.metadata.json` body, kept within SIDECAR_MAX_BYTES.
+
+    The Knowledge Base skips a PDF whose metadata is over 1 KB (three were,
+    each with a 600-character URL). Long titles and author lists are shortened;
+    a URL that still does not fit is dropped rather than cut, since a truncated
+    link points nowhere, and the title still identifies the document.
+    """
+    attrs = dict(attributes)
+    attrs["title"] = str(attrs.get("title", ""))[:300]
+    attrs["author"] = str(attrs.get("author", ""))[:200]
+
+    def encode() -> bytes:
+        return json.dumps({"metadataAttributes": attrs}, ensure_ascii=False).encode()
+
+    body = encode()
+    if len(body) > SIDECAR_MAX_BYTES:
+        attrs.pop("source_url", None)
+        body = encode()
+    while len(body) > SIDECAR_MAX_BYTES and attrs["title"]:
+        attrs["title"] = attrs["title"][:-20]
+        body = encode()
+    return body
+
+
+def start_kb_sync() -> None:
+    """Ask the Knowledge Base to index what this run uploaded.
+
+    Ingestion is incremental (only new or changed PDFs are embedded) and runs
+    on AWS, so this only starts the job. If last hour's job is still running
+    the call is refused; the next run with uploads picks up what it missed.
+    """
+    if not (KB_ID and KB_DATA_SOURCE_ID):
+        LOGGER.info("BEDROCK_KB_ID / BEDROCK_KB_DATA_SOURCE_ID unset; not syncing the Knowledge Base")
+        return
+    import boto3
+
+    try:
+        job = boto3.client(
+            "bedrock-agent", region_name=os.getenv("BEDROCK_REGION", "us-east-1")
+        ).start_ingestion_job(
+            knowledgeBaseId=KB_ID, dataSourceId=KB_DATA_SOURCE_ID, description="pdf_downloader.py"
+        )["ingestionJob"]
+        LOGGER.info("Knowledge Base sync started: job %s", job["ingestionJobId"])
+    except Exception as exc:
+        LOGGER.warning("Knowledge Base sync not started: %s", exc)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -648,6 +699,8 @@ def main(argv: list[str] | None = None) -> int:
         counts["downloaded"], total_bytes / 2**20, counts["failed"], counts["retry"],
         report_path,
     )
+    if counts["downloaded"] and not args.dry_run:
+        start_kb_sync()
     return 0
 
 

@@ -212,6 +212,12 @@ On the box it runs hourly as the `soakingarri-pdf-downloader` timer
 `soakingarri-rag-collector`. It runs at low priority with a 350 MB memory cap,
 and spools to `./tmp` rather than the RAM-backed `/tmp`.
 
+After a run that uploaded anything, it starts an ingestion job on the Ask
+Knowledge Base (`infra/bedrock_kb/setup_kb.py`), so new PDFs are searchable
+within the hour. That needs `BEDROCK_KB_ID` and `BEDROCK_KB_DATA_SOURCE_ID` in
+`collector.env`; without them the step is skipped. Ingestion is incremental,
+and a job still running from the previous hour is left alone.
+
 First measurement (dry run, 30 rows): 22 downloaded, 4 failed (three behind a
 reCAPTCHA wall, one record with no file), 4 temporary errors.
 
